@@ -7,7 +7,7 @@ name = "clashcontrol-engine"
 version = "0.1.0"
 description = "Local clash detection server for ClashControl — multi-threaded exact mesh intersection"
 readme = "README.md"
-license = "MIT"
+license = "SSPL-1.0"
 requires-python = ">=3.8"
 authors = [
     { name = "ClashControl", email = "hello@clashcontrol.io" },
@@ -17,7 +17,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -39,7 +39,7 @@ clashcontrol-engine = "clashcontrol_engine.cli:main"
 
 [project.urls]
 Homepage = "https://clashcontrol.io"
-Repository = "https://github.com/clashcontrol-io/clashcontrol"
+Repository = "https://github.com/clashcontrol-io/ClashControlEngine"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clashcontrol_engine"]

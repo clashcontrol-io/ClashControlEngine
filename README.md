@@ -50,3 +50,7 @@ The browser engine is used automatically as a fallback when this server isn't ru
 
 - Python 3.8+
 - numpy
+
+## License
+
+[SSPL v1](LICENSE) — same license as [ClashControl](https://github.com/clashcontrol-io/ClashControl).
