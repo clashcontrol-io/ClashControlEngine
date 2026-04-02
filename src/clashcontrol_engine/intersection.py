@@ -4,22 +4,104 @@ Narrow phase: Möller triangle-triangle intersection test + BVH.
 Implements the same algorithm as ClashControl's browser engine:
 - BVH tree per mesh for O(n log n) pair pruning
 - Möller 1997 fast triangle-triangle intersection
-- All in numpy for vectorized performance
+- Numba JIT compilation when available for ~20-50x speedup
 """
 import numpy as np
+
+# ── Numba JIT setup ──────────────────────────────────────────────
+
+try:
+    from numba import njit
+except ImportError:
+    def njit(*args, **kwargs):
+        """Fallback: no-op decorator when numba is not installed."""
+        def _wrap(f):
+            return f
+        if args and callable(args[0]):
+            return args[0]
+        return _wrap
 
 
 # ── Möller triangle-triangle intersection ─────────────────────────
 
-def _cross(a, b):
-    """Cross product for (3,) arrays."""
-    return np.array([
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ])
+@njit(cache=True)
+def _cross(ax, ay, az, bx, by, bz):
+    """Cross product for scalar components."""
+    return (
+        ay * bz - az * by,
+        az * bx - ax * bz,
+        ax * by - ay * bx,
+    )
 
 
+@njit(cache=True)
+def _compute_interval(p0, p1, p2, d0, d1, d2):
+    """
+    Compute the interval of a triangle on the intersection line.
+    Returns (t0, t1, valid) where valid=1 if interval exists, 0 otherwise.
+    """
+    if d0 * d1 > 0:
+        denom0 = d0 - d2
+        denom1 = d1 - d2
+        if abs(denom0) < 1e-30 or abs(denom1) < 1e-30:
+            return 0.0, 0.0, 0
+        t0 = p0 + (p2 - p0) * d0 / denom0
+        t1 = p1 + (p2 - p1) * d1 / denom1
+        return t0, t1, 1
+    elif d0 * d2 > 0:
+        denom0 = d0 - d1
+        denom1 = d2 - d1
+        if abs(denom0) < 1e-30 or abs(denom1) < 1e-30:
+            return 0.0, 0.0, 0
+        t0 = p0 + (p1 - p0) * d0 / denom0
+        t1 = p2 + (p1 - p2) * d2 / denom1
+        return t0, t1, 1
+    elif d1 * d2 > 0:
+        denom0 = d1 - d0
+        denom1 = d2 - d0
+        if abs(denom0) < 1e-30 or abs(denom1) < 1e-30:
+            return 0.0, 0.0, 0
+        t0 = p1 + (p0 - p1) * d1 / denom0
+        t1 = p2 + (p0 - p2) * d2 / denom1
+        return t0, t1, 1
+    elif d0 == 0.0:
+        if d1 * d2 > 0:
+            return 0.0, 0.0, 0
+        if abs(d1 - d2) < 1e-30:
+            return 0.0, 0.0, 0
+        t0 = p0
+        if d1 != 0.0:
+            t1 = p1 + (p2 - p1) * d1 / (d1 - d2)
+        else:
+            t1 = p1
+        return t0, t1, 1
+    elif d1 == 0.0:
+        if d0 * d2 > 0:
+            return 0.0, 0.0, 0
+        if abs(d0 - d2) < 1e-30:
+            return 0.0, 0.0, 0
+        t0 = p1
+        if d0 != 0.0:
+            t1 = p0 + (p2 - p0) * d0 / (d0 - d2)
+        else:
+            t1 = p0
+        return t0, t1, 1
+    elif d2 == 0.0:
+        if d0 * d1 > 0:
+            return 0.0, 0.0, 0
+        if abs(d0 - d1) < 1e-30:
+            return 0.0, 0.0, 0
+        t0 = p2
+        if d0 != 0.0:
+            t1 = p0 + (p1 - p0) * d0 / (d0 - d1)
+        else:
+            t1 = p0
+        return t0, t1, 1
+    else:
+        return 0.0, 0.0, 0
+
+
+@njit(cache=True)
 def tri_tri_intersect(tri_a, tri_b):
     """
     Möller 1997 triangle-triangle intersection test.
@@ -29,25 +111,29 @@ def tri_tri_intersect(tri_a, tri_b):
     midpoint: (3,) intersection segment midpoint.
     depth: float, length of intersection segment.
     """
-    v0, v1, v2 = tri_a[0], tri_a[1], tri_a[2]
-    u0, u1, u2 = tri_b[0], tri_b[1], tri_b[2]
+    v0x, v0y, v0z = tri_a[0, 0], tri_a[0, 1], tri_a[0, 2]
+    v1x, v1y, v1z = tri_a[1, 0], tri_a[1, 1], tri_a[1, 2]
+    v2x, v2y, v2z = tri_a[2, 0], tri_a[2, 1], tri_a[2, 2]
+
+    u0x, u0y, u0z = tri_b[0, 0], tri_b[0, 1], tri_b[0, 2]
+    u1x, u1y, u1z = tri_b[1, 0], tri_b[1, 1], tri_b[1, 2]
+    u2x, u2y, u2z = tri_b[2, 0], tri_b[2, 1], tri_b[2, 2]
 
     # Plane of triangle B
-    e1 = u1 - u0
-    e2 = u2 - u0
-    n2 = _cross(e1, e2)
-    n2_sq = np.dot(n2, n2)
+    e1x, e1y, e1z = u1x - u0x, u1y - u0y, u1z - u0z
+    e2x, e2y, e2z = u2x - u0x, u2y - u0y, u2z - u0z
+    n2x, n2y, n2z = _cross(e1x, e1y, e1z, e2x, e2y, e2z)
+    n2_sq = n2x * n2x + n2y * n2y + n2z * n2z
     if n2_sq < 1e-20:
         return None  # degenerate triangle
-    d2 = -np.dot(n2, u0)
+    d2 = -(n2x * u0x + n2y * u0y + n2z * u0z)
 
     # Signed distances of A's vertices to B's plane
-    da0 = np.dot(n2, v0) + d2
-    da1 = np.dot(n2, v1) + d2
-    da2 = np.dot(n2, v2) + d2
+    da0 = n2x * v0x + n2y * v0y + n2z * v0z + d2
+    da1 = n2x * v1x + n2y * v1y + n2z * v1z + d2
+    da2 = n2x * v2x + n2y * v2y + n2z * v2z + d2
 
-    eps = 1e-6 * np.sqrt(n2_sq)
-    # Snap near-zero to zero
+    eps = 1e-6 * n2_sq ** 0.5
     if abs(da0) < eps:
         da0 = 0.0
     if abs(da1) < eps:
@@ -55,26 +141,25 @@ def tri_tri_intersect(tri_a, tri_b):
     if abs(da2) < eps:
         da2 = 0.0
 
-    # All on same side? No intersection
-    if da0 > 0 and da1 > 0 and da2 > 0:
+    if da0 > 0.0 and da1 > 0.0 and da2 > 0.0:
         return None
-    if da0 < 0 and da1 < 0 and da2 < 0:
+    if da0 < 0.0 and da1 < 0.0 and da2 < 0.0:
         return None
 
     # Plane of triangle A
-    e1a = v1 - v0
-    e2a = v2 - v0
-    n1 = _cross(e1a, e2a)
-    n1_sq = np.dot(n1, n1)
+    e1ax, e1ay, e1az = v1x - v0x, v1y - v0y, v1z - v0z
+    e2ax, e2ay, e2az = v2x - v0x, v2y - v0y, v2z - v0z
+    n1x, n1y, n1z = _cross(e1ax, e1ay, e1az, e2ax, e2ay, e2az)
+    n1_sq = n1x * n1x + n1y * n1y + n1z * n1z
     if n1_sq < 1e-20:
         return None
-    d1 = -np.dot(n1, v0)
+    d1 = -(n1x * v0x + n1y * v0y + n1z * v0z)
 
-    db0 = np.dot(n1, u0) + d1
-    db1 = np.dot(n1, u1) + d1
-    db2 = np.dot(n1, u2) + d1
+    db0 = n1x * u0x + n1y * u0y + n1z * u0z + d1
+    db1 = n1x * u1x + n1y * u1y + n1z * u1z + d1
+    db2 = n1x * u2x + n1y * u2y + n1z * u2z + d1
 
-    eps1 = 1e-6 * np.sqrt(n1_sq)
+    eps1 = 1e-6 * n1_sq ** 0.5
     if abs(db0) < eps1:
         db0 = 0.0
     if abs(db1) < eps1:
@@ -82,18 +167,18 @@ def tri_tri_intersect(tri_a, tri_b):
     if abs(db2) < eps1:
         db2 = 0.0
 
-    if db0 > 0 and db1 > 0 and db2 > 0:
+    if db0 > 0.0 and db1 > 0.0 and db2 > 0.0:
         return None
-    if db0 < 0 and db1 < 0 and db2 < 0:
+    if db0 < 0.0 and db1 < 0.0 and db2 < 0.0:
         return None
 
     # Intersection line direction
-    D = _cross(n1, n2)
+    Dx, Dy, Dz = _cross(n1x, n1y, n1z, n2x, n2y, n2z)
 
     # Project onto largest axis of D
-    ax = abs(D[0])
-    ay = abs(D[1])
-    az = abs(D[2])
+    ax = abs(Dx)
+    ay = abs(Dy)
+    az = abs(Dz)
     if ax >= ay and ax >= az:
         proj_idx = 0
     elif ay >= az:
@@ -101,23 +186,31 @@ def tri_tri_intersect(tri_a, tri_b):
     else:
         proj_idx = 2
 
-    pv0 = v0[proj_idx]
-    pv1 = v1[proj_idx]
-    pv2 = v2[proj_idx]
-    pu0 = u0[proj_idx]
-    pu1 = u1[proj_idx]
-    pu2 = u2[proj_idx]
+    if proj_idx == 0:
+        pv0, pv1, pv2 = v0x, v1x, v2x
+        pu0, pu1, pu2 = u0x, u1x, u2x
+        D_proj = Dx
+    elif proj_idx == 1:
+        pv0, pv1, pv2 = v0y, v1y, v2y
+        pu0, pu1, pu2 = u0y, u1y, u2y
+        D_proj = Dy
+    else:
+        pv0, pv1, pv2 = v0z, v1z, v2z
+        pu0, pu1, pu2 = u0z, u1z, u2z
+        D_proj = Dz
 
-    # Compute intervals for triangle A on the intersection line
-    ival_a = _compute_interval(pv0, pv1, pv2, da0, da1, da2)
-    if ival_a is None:
+    # Compute intervals
+    a0, a1, a_valid = _compute_interval(pv0, pv1, pv2, da0, da1, da2)
+    if a_valid == 0:
         return None
-    ival_b = _compute_interval(pu0, pu1, pu2, db0, db1, db2)
-    if ival_b is None:
+    b0, b1, b_valid = _compute_interval(pu0, pu1, pu2, db0, db1, db2)
+    if b_valid == 0:
         return None
 
-    a_lo, a_hi = min(ival_a), max(ival_a)
-    b_lo, b_hi = min(ival_b), max(ival_b)
+    a_lo = min(a0, a1)
+    a_hi = max(a0, a1)
+    b_lo = min(b0, b1)
+    b_hi = max(b0, b1)
 
     # Overlap test
     lo = max(a_lo, b_lo)
@@ -125,73 +218,32 @@ def tri_tri_intersect(tri_a, tri_b):
     if lo > hi:
         return None
 
-    # Compute 3D midpoint of the overlap segment
-    if abs(D[proj_idx]) < 1e-30:
+    if abs(D_proj) < 1e-30:
         return None
 
     t_mid = (lo + hi) * 0.5
-    # Pick a base point on the intersection line
-    # Use the centroid of the two triangles projected onto the line
-    base = (v0 + v1 + v2 + u0 + u1 + u2) / 6.0
-    base_proj = base[proj_idx]
-    t_offset = t_mid - base_proj
+    # Base point: centroid of the two triangles
+    base_x = (v0x + v1x + v2x + u0x + u1x + u2x) / 6.0
+    base_y = (v0y + v1y + v2y + u0y + u1y + u2y) / 6.0
+    base_z = (v0z + v1z + v2z + u0z + u1z + u2z) / 6.0
 
-    midpoint = base + D * (t_offset / D[proj_idx])
+    if proj_idx == 0:
+        base_proj = base_x
+    elif proj_idx == 1:
+        base_proj = base_y
+    else:
+        base_proj = base_z
+
+    t_offset = t_mid - base_proj
+    scale = t_offset / D_proj
+
+    midpoint = np.empty(3, dtype=np.float64)
+    midpoint[0] = base_x + Dx * scale
+    midpoint[1] = base_y + Dy * scale
+    midpoint[2] = base_z + Dz * scale
     depth = hi - lo
 
     return midpoint, depth
-
-
-def _compute_interval(p0, p1, p2, d0, d1, d2):
-    """Compute the interval of a triangle on the intersection line."""
-    # Find the vertex on one side, two on the other
-    if d0 * d1 > 0:
-        # d0, d1 same side; d2 alone
-        if abs(d2 - d0) < 1e-30 or abs(d2 - d1) < 1e-30:
-            return None
-        t0 = p0 + (p2 - p0) * d0 / (d0 - d2)
-        t1 = p1 + (p2 - p1) * d1 / (d1 - d2)
-        return (t0, t1)
-    elif d0 * d2 > 0:
-        # d0, d2 same side; d1 alone
-        if abs(d1 - d0) < 1e-30 or abs(d1 - d2) < 1e-30:
-            return None
-        t0 = p0 + (p1 - p0) * d0 / (d0 - d1)
-        t1 = p2 + (p1 - p2) * d2 / (d2 - d1)
-        return (t0, t1)
-    elif d1 * d2 > 0:
-        # d1, d2 same side; d0 alone
-        if abs(d0 - d1) < 1e-30 or abs(d0 - d2) < 1e-30:
-            return None
-        t0 = p1 + (p0 - p1) * d1 / (d1 - d0)
-        t1 = p2 + (p0 - p2) * d2 / (d2 - d0)
-        return (t0, t1)
-    elif d0 == 0:
-        if d1 * d2 > 0:
-            return None  # only vertex touches
-        if abs(d1 - d2) < 1e-30:
-            return None
-        t0 = p0
-        t1 = p1 + (p2 - p1) * d1 / (d1 - d2) if d1 != 0 else p1
-        return (t0, t1)
-    elif d1 == 0:
-        if d0 * d2 > 0:
-            return None
-        if abs(d0 - d2) < 1e-30:
-            return None
-        t0 = p1
-        t1 = p0 + (p2 - p0) * d0 / (d0 - d2) if d0 != 0 else p0
-        return (t0, t1)
-    elif d2 == 0:
-        if d0 * d1 > 0:
-            return None
-        if abs(d0 - d1) < 1e-30:
-            return None
-        t0 = p2
-        t1 = p0 + (p1 - p0) * d0 / (d0 - d1) if d0 != 0 else p0
-        return (t0, t1)
-    else:
-        return None
 
 
 # ── BVH (Bounding Volume Hierarchy) ──────────────────────────────

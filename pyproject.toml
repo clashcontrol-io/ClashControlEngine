@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-fast = ["scipy>=1.11"]
+fast = ["scipy>=1.11", "numba>=0.57"]
 
 [project.scripts]
 clashcontrol-engine = "clashcontrol_engine.cli:main"

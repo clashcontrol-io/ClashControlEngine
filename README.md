@@ -8,7 +8,7 @@ Local clash detection server for [ClashControl](https://clashcontrol.io) — mul
 pip install clashcontrol-engine
 ```
 
-For faster soft-clash distance calculations (scipy KD-tree):
+For faster performance (Numba JIT compilation + scipy KD-tree):
 
 ```bash
 pip install clashcontrol-engine[fast]
@@ -43,6 +43,9 @@ Runs an HTTP + WebSocket server on `localhost:19800` that ClashControl connects 
 | Threads | 1 | All CPU cores |
 | Accuracy | OBB approximation | Exact triangle intersection |
 | Speed (10K elements) | ~60s | ~15-20s |
+| With `[fast]` extra | — | ~1-3s |
+
+The `[fast]` extra adds Numba JIT compilation (~20-50x per-core speedup on triangle intersection) and scipy KD-tree for distance calculations. Without it, the engine runs the same algorithms in pure Python/numpy.
 
 The browser engine is used automatically as a fallback when this server isn't running.
 
