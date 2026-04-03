@@ -36,7 +36,7 @@ jobs:
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
         run: |
-          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --runtime-tmpdir . --hidden-import websockets src/clashcontrol_engine/__main__.py
+          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --hidden-import websockets src/clashcontrol_engine/__main__.py
 
       - name: Build executable (Unix)
         if: runner.os != 'Windows'
