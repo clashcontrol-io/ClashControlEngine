@@ -36,12 +36,12 @@ jobs:
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
         run: |
-          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --runtime-tmpdir . src/clashcontrol_engine/__main__.py
+          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --runtime-tmpdir . --hidden-import websockets src/clashcontrol_engine/__main__.py
 
       - name: Build executable (Unix)
         if: runner.os != 'Windows'
         run: |
-          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --strip src/clashcontrol_engine/__main__.py
+          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --strip --hidden-import websockets src/clashcontrol_engine/__main__.py
 
       - name: Exclude Windows exe from Defender scanning
         if: runner.os == 'Windows'

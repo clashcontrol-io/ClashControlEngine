@@ -142,11 +142,17 @@ def run_server(host=None, port=None):
     except ImportError:
         print("[CC Engine] websockets not installed — progress updates disabled")
         print("[CC Engine] Install with: pip install websockets")
-        # Keep running with just HTTP
+        # Keep running with just HTTP — block main thread
         try:
-            http_thread.join()
-        except KeyboardInterrupt:
-            pass
+            import signal
+            signal.pause()
+        except (AttributeError, KeyboardInterrupt):
+            # signal.pause() not available on Windows — use thread join
+            try:
+                http_thread.daemon = False
+                http_thread.join()
+            except KeyboardInterrupt:
+                pass
     except KeyboardInterrupt:
         pass
     finally:
