@@ -12,7 +12,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
 from . import __version__
-from .engine import detect_clashes
+from .engine import detect_clashes, BACKENDS
 
 PORT = int(os.environ.get('CC_ENGINE_PORT', 19800))
 HOST = os.environ.get('CC_ENGINE_HOST', 'localhost')
@@ -29,6 +29,7 @@ class Handler(BaseHTTPRequestHandler):
                 'status': 'ready',
                 'version': __version__,
                 'cores': multiprocessing.cpu_count(),
+                'backends': BACKENDS,
             })
         else:
             self.send_response(404)
@@ -123,6 +124,7 @@ def run_server(host=None, port=None):
     print(f"[CC Engine] HTTP  → http://{host}:{port}")
     print(f"[CC Engine] WS    → ws://{host}:{ws_port}")
     print(f"[CC Engine] Cores → {multiprocessing.cpu_count()}")
+    print(f"[CC Engine] Accel → {', '.join(BACKENDS)}")
     print(f"[CC Engine] Ready for connections")
 
     # HTTP server in a daemon thread

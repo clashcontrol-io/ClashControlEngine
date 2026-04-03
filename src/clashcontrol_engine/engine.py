@@ -15,6 +15,25 @@ from .sweep import sweep_and_prune
 from .intersection import meshes_intersect, mesh_min_distance
 
 
+def _detect_backends():
+    """Detect which acceleration backends are available."""
+    backends = ['numpy']
+    try:
+        import numba
+        backends.append('numba')
+    except ImportError:
+        pass
+    try:
+        import scipy
+        backends.append('scipy')
+    except ImportError:
+        pass
+    return backends
+
+
+BACKENDS = _detect_backends()
+
+
 def _parse_elements(payload):
     """
     Parse the elements array from the browser addon into internal format.
@@ -210,4 +229,5 @@ def _stats(element_count, candidate_pairs, clash_count, t0, threads):
         'clashCount': clash_count,
         'duration_ms': round((time.time() - t0) * 1000),
         'threads': threads,
+        'backends': BACKENDS,
     }
