@@ -118,8 +118,10 @@ def detect_clashes(payload, on_progress=None):
     t0 = time.time()
 
     rules = payload.get('rules', {})
-    max_gap_m = rules.get('maxGap', 0) / 1000.0
-    check_hard = rules.get('mode', 'hard') != 'soft'
+    mode = rules.get('mode', 'hard')
+    check_hard = mode != 'soft'
+    check_soft = mode == 'soft' or mode == 'both'
+    max_gap_m = rules.get('maxGap', 0) / 1000.0 if check_soft else 0
     num_workers = max(1, multiprocessing.cpu_count() - 1)
 
     # 1. Parse elements
