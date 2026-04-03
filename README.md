@@ -4,6 +4,20 @@ Local clash detection server for [ClashControl](https://clashcontrol.io) — mul
 
 ## Install
 
+### Standalone (no Python required)
+
+Download the latest executable for your platform:
+
+- [Windows (.exe)](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-win.exe)
+- [macOS](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-mac)
+- [Linux](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-linux)
+
+Download, run the file, done. No install wizard needed.
+
+> **Note:** Standalone executables are available once a [release is published](https://github.com/clashcontrol-io/ClashControlEngine/releases). Until then, use pip install below.
+
+### pip (Python 3.8+)
+
 ```bash
 pip install clashcontrol-engine
 ```
