@@ -14,8 +14,6 @@ Download the latest executable for your platform:
 
 Download, run the file, done. No install wizard needed.
 
-> **Note:** Standalone executables are available once a [release is published](https://github.com/clashcontrol-io/ClashControlEngine/releases). Until then, use pip install below.
-
 ### pip (Python 3.8+)
 
 ```bash
