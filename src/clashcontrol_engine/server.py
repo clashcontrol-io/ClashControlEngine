@@ -136,9 +136,12 @@ def run_server(host=None, port=None):
 
     try:
         import websockets
-        ws_server = websockets.serve(_ws_handler, host, ws_port)
-        _loop.run_until_complete(ws_server)
-        _loop.run_forever()
+
+        async def _start_ws():
+            server = await websockets.serve(_ws_handler, host, ws_port)
+            await server.serve_forever()
+
+        _loop.run_until_complete(_start_ws())
     except ImportError:
         print("[CC Engine] websockets not installed — progress updates disabled")
         print("[CC Engine] Install with: pip install websockets")
