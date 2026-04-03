@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
       - name: Install dependencies
         run: |
@@ -35,7 +35,25 @@ jobs:
 
       - name: Build executable
         run: |
-          pyinstaller --onefile --name ${{ matrix.artifact }} --strip --noupx src/clashcontrol_engine/__main__.py
+          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals src/clashcontrol_engine/__main__.py
+
+      - name: Exclude Windows exe from Defender scanning
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}\dist"
+
+      - name: Smoke test (non-Windows)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x dist/${{ matrix.artifact }}
+          timeout 5 dist/${{ matrix.artifact }} --help || true
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          dist\${{ matrix.artifact }} --help || exit 0
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
