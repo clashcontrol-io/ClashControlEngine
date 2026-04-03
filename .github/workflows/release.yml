@@ -31,17 +31,17 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pyinstaller
-          pip install .
+          pip install ".[fast]"
 
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
         run: |
-          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --hidden-import websockets src/clashcontrol_engine/__main__.py
+          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --hidden-import websockets --hidden-import scipy.spatial --collect-submodules scipy src/clashcontrol_engine/__main__.py
 
       - name: Build executable (Unix)
         if: runner.os != 'Windows'
         run: |
-          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --strip --hidden-import websockets src/clashcontrol_engine/__main__.py
+          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --strip --hidden-import websockets --hidden-import scipy.spatial --collect-submodules scipy src/clashcontrol_engine/__main__.py
 
       - name: Exclude Windows exe from Defender scanning
         if: runner.os == 'Windows'
