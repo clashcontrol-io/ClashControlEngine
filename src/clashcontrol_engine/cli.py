@@ -20,13 +20,176 @@ def main():
         help='Bind address (default: localhost)',
     )
 
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        '--install', action='store_true',
+        help='Register the clashcontrol:// URL scheme and start the engine now',
+    )
+    mode.add_argument(
+        '--uninstall', action='store_true',
+        help='Remove the clashcontrol:// URL scheme and stop the running engine',
+    )
+    mode.add_argument(
+        '--daemon', action='store_true',
+        help='Start the engine as a detached background process and exit',
+    )
+    mode.add_argument(
+        '--stop', action='store_true',
+        help='Stop a running background engine and exit',
+    )
+    mode.add_argument(
+        '--status', action='store_true',
+        help='Report whether the engine is running and exit',
+    )
+    mode.add_argument(
+        '--open', metavar='URL', default=None,
+        help=argparse.SUPPRESS,  # Invoked by the URL scheme handler
+    )
+
     args = parser.parse_args()
+
+    if args.install:
+        sys.exit(_cmd_install(args.host, args.port))
+    if args.uninstall:
+        sys.exit(_cmd_uninstall())
+    if args.daemon:
+        sys.exit(_cmd_daemon(args.host, args.port))
+    if args.stop:
+        sys.exit(_cmd_stop())
+    if args.status:
+        sys.exit(_cmd_status())
+    if args.open is not None:
+        sys.exit(_cmd_open(args.open, args.host, args.port))
 
     try:
         from .server import run_server
         run_server(host=args.host, port=args.port)
     except KeyboardInterrupt:
         sys.exit(0)
+
+
+def _cmd_install(host, port):
+    """First-run install: register URL scheme + start the engine immediately."""
+    from . import daemon, protocol
+
+    location = protocol.install_protocol()
+    print(f"[CC Engine] Registered clashcontrol:// handler at {location}")
+
+    state, info = daemon.current_status()
+    if state == "running":
+        running_host = info.get("host", host)
+        running_port = info.get("port", port)
+        print(
+            f"[CC Engine] Engine already running (pid={info['pid']}) on "
+            f"http://{running_host}:{running_port}"
+        )
+    else:
+        if state == "stale":
+            # Tidy up a leftover file from a previous crash
+            daemon._clear_pid()
+        try:
+            pid = daemon.start_daemon(host, port)
+        except RuntimeError as e:
+            print(f"[CC Engine] {e}", file=sys.stderr)
+            return 1
+        print(f"[CC Engine] Engine started (pid={pid}) on http://{host}:{port}")
+
+    print()
+    print("[CC Engine] Install complete.")
+    print("[CC Engine] Open ClashControl — it will connect automatically.")
+    print("[CC Engine] Next time, just click Connect in ClashControl and the")
+    print("[CC Engine] engine will start on demand. Nothing auto-runs at login.")
+    return 0
+
+
+def _cmd_uninstall():
+    from . import daemon, protocol
+
+    removed = protocol.uninstall_protocol()
+    stopped = daemon.stop_daemon()
+
+    if removed:
+        print("[CC Engine] clashcontrol:// handler removed")
+    else:
+        print("[CC Engine] No URL handler was registered")
+    if stopped:
+        print("[CC Engine] Stopped running engine")
+    else:
+        print("[CC Engine] Engine was not running")
+    return 0
+
+
+def _cmd_daemon(host, port):
+    from . import daemon
+    try:
+        pid = daemon.start_daemon(host, port)
+    except RuntimeError as e:
+        print(f"[CC Engine] {e}", file=sys.stderr)
+        return 1
+    print(f"[CC Engine] Started detached (pid={pid}) on http://{host}:{port}")
+    print(f"[CC Engine] PID file: {daemon.pid_file()}")
+    print(f"[CC Engine] Log file: {daemon.log_file()}")
+    print(f"[CC Engine] Stop with: clashcontrol-engine --stop")
+    return 0
+
+
+def _cmd_stop():
+    from . import daemon
+    if daemon.stop_daemon():
+        print("[CC Engine] Stopped")
+        return 0
+    print("[CC Engine] Not running")
+    return 1
+
+
+def _cmd_status():
+    from . import daemon, protocol
+    state, info = daemon.current_status()
+    scheme_on = protocol.protocol_status()
+
+    if state == "running":
+        host = info.get("host", "localhost")
+        port = info.get("port", 19800)
+        print(
+            f"[CC Engine] Running (pid={info['pid']}) on http://{host}:{port}"
+        )
+        print(f"[CC Engine] URL handler: {'registered' if scheme_on else 'not registered'}")
+        return 0
+    if state == "stale":
+        print(f"[CC Engine] Stale PID file (pid={info['pid']} not alive)")
+        print(f"[CC Engine] URL handler: {'registered' if scheme_on else 'not registered'}")
+        return 2
+    print("[CC Engine] Not running")
+    print(f"[CC Engine] URL handler: {'registered' if scheme_on else 'not registered'}")
+    return 1
+
+
+def _cmd_open(url, host, port):
+    """Invoked by the OS when a ``clashcontrol://`` URL is activated.
+
+    The URL body is currently ignored — we just ensure the daemon is
+    running. This is idempotent: if the engine is already up, return
+    success without touching it.
+    """
+    from . import daemon, protocol
+
+    if not protocol.is_protocol_url(url):
+        print(f"[CC Engine] --open expects a clashcontrol:// URL, got: {url!r}",
+              file=sys.stderr)
+        return 2
+
+    state, _ = daemon.current_status()
+    if state == "running":
+        return 0
+    if state == "stale":
+        daemon._clear_pid()
+
+    try:
+        daemon.start_daemon(host, port)
+    except RuntimeError as e:
+        print(f"[CC Engine] {e}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == '__main__':

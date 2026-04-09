@@ -5,13 +5,14 @@ HTTP + WebSocket server for ClashControl local clash detection.
 - WebSocket on PORT+1 (default 19801): progress updates during detection
 """
 import asyncio
+import atexit
 import json
 import multiprocessing
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
-from . import __version__
+from . import __version__, daemon as _daemon
 from .engine import detect_clashes, BACKENDS
 
 PORT = int(os.environ.get('CC_ENGINE_PORT', 19800))
@@ -126,6 +127,12 @@ def run_server(host=None, port=None):
     print(f"[CC Engine] Cores → {multiprocessing.cpu_count()}")
     print(f"[CC Engine] Accel → {', '.join(BACKENDS)}")
     print(f"[CC Engine] Ready for connections")
+
+    # Publish our PID so --stop / --status (and ClashControl's "already
+    # running?" probe) can find us. Cleared on normal exit via atexit.
+    my_pid = os.getpid()
+    _daemon._write_pid(my_pid, host, port)
+    atexit.register(_daemon._clear_pid_if_mine, my_pid)
 
     # HTTP server in a daemon thread
     http_server = HTTPServer((host, port), Handler)
