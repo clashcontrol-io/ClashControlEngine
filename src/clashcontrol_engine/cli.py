@@ -77,6 +77,35 @@ def main():
     sys.exit(_cmd_install(args.host, args.port))
 
 
+def _show_result(message, is_error=False, title="ClashControl Engine"):
+    """Surface a final install/uninstall result to the user.
+
+    Silent no-op when ``print()`` output is already visible — the
+    caller has already written progress lines to the console, and a
+    dialog on top of that would be redundant. Used only to rescue the
+    feedback path for a ``--noconsole`` build double-clicked from
+    Explorer, where ``sys.stdout`` is a silent sink and the user
+    would otherwise see nothing at all.
+    """
+    from ._bootstrap import has_console_output
+    if has_console_output():
+        return
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        MB_OK = 0x0
+        MB_ICONINFO = 0x40
+        MB_ICONERR = 0x10
+        flags = MB_OK | (MB_ICONERR if is_error else MB_ICONINFO)
+        ctypes.windll.user32.MessageBoxW(None, message, title, flags)
+    except Exception:
+        # A missing MessageBox is the least of our worries at this
+        # point; swallowing keeps the install flow from surfacing a
+        # traceback into an invisible sink.
+        pass
+
+
 def _cmd_install(host, port):
     """First-run install: self-install + URL scheme + start the engine.
 
@@ -90,6 +119,11 @@ def _cmd_install(host, port):
          it will point at the install location, not at the download.
       4. Start a fresh daemon from the canonical install location.
       5. Tell the user it's safe to delete the downloaded binary.
+
+    All progress is ``print``-ed as the flow runs (visible when
+    launched from a terminal), and a final summary ``MessageBox`` is
+    shown at the end when the build has no visible console (typical
+    for a double-click of a ``--noconsole`` PyInstaller binary).
     """
     from . import daemon, install, protocol
 
@@ -128,6 +162,11 @@ def _cmd_install(host, port):
         pid = daemon.start_daemon(host, port)
     except RuntimeError as e:
         print(f"[CC Engine] {e}", file=sys.stderr)
+        _show_result(
+            f"ClashControl Engine install failed:\n\n{e}\n\n"
+            f"See {daemon.log_file()} for details.",
+            is_error=True,
+        )
         return 1
     print(f"[CC Engine] Engine started (pid={pid}) on http://{host}:{port}")
 
@@ -140,6 +179,12 @@ def _cmd_install(host, port):
     print("[CC Engine] Open ClashControl - it will connect automatically.")
     print("[CC Engine] Next time, just click Connect in ClashControl and the")
     print("[CC Engine] engine will start on demand. Nothing auto-runs at login.")
+
+    _show_result(
+        "ClashControl Engine is installed and running.\n\n"
+        f"Listening on http://{host}:{port}\n\n"
+        "Open ClashControl - it will connect automatically."
+    )
     return 0
 
 
@@ -162,6 +207,8 @@ def _cmd_uninstall():
         print("[CC Engine] Engine was not running")
     if deleted:
         print(f"[CC Engine] Removed installed binary at {install.install_path()}")
+
+    _show_result("ClashControl Engine uninstalled.")
     return 0
 
 
