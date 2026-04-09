@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-04-09
 
 - **One-click install.** Running `clashcontrol-engine` with no arguments
   is now the install flow: it registers a per-user `clashcontrol://`
