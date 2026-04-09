@@ -170,11 +170,19 @@ def current_status():
     return "stale", {"pid": pid, **info}
 
 
-def start_daemon(host: str, port: int, wait_seconds: float = 10.0) -> int:
+def start_daemon(host: str, port: int, wait_seconds: float = 10.0,
+                 wait_for_ready: bool = True) -> int:
     """Spawn the engine as a detached background process.
 
     Returns the child PID. Raises ``RuntimeError`` if one is already
     running or if the child exits before the HTTP server comes up.
+
+    When ``wait_for_ready`` is ``False``, spawn the child and return
+    immediately without probing for the HTTP endpoint. Use this from
+    fire-and-forget callers like the ``clashcontrol://`` URL scheme
+    handler, where blocking the parent pins a Windows console window
+    open for up to ``wait_seconds`` for no user benefit — the invoker
+    (e.g. ClashControl's Connect button) runs its own retry loop.
     """
     state, info = current_status()
     if state == "running":
@@ -205,6 +213,18 @@ def start_daemon(host: str, port: int, wait_seconds: float = 10.0) -> int:
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(cmd, **popen_kwargs)
+
+    if not wait_for_ready:
+        # Fire-and-forget. Write a provisional PID file so any
+        # immediately-following --status (or concurrent --open
+        # invocation from a rapid double-click) sees the spawn in
+        # progress and doesn't try to spawn another. run_server's
+        # atexit hook rewrites the file with the correct info once
+        # the child binds its socket. If the child crashes before
+        # that, the next status check will detect it as stale.
+        if _read_pid() is None:
+            _write_pid(proc.pid, host, port)
+        return proc.pid
 
     deadline = time.time() + wait_seconds
     while time.time() < deadline:

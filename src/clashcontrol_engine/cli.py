@@ -210,13 +210,44 @@ def _cmd_status():
     return 1
 
 
+def _hide_console_window():
+    """Hide the Windows console window attached to this process.
+
+    When the ``clashcontrol://`` URL scheme fires, Windows launches
+    the registered ``.exe`` and, because the PyInstaller build is a
+    console-subsystem binary, attaches a visible cmd window to it.
+    We can't prevent the window from appearing during the PyInstaller
+    bootloader extraction phase (that runs before any of our code),
+    but the moment Python is live we hide it so the terminal box
+    isn't pinned open while our code executes.
+
+    No-op outside Windows or when no console is attached (running
+    from an IDE, test harness, or embedded host).
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            SW_HIDE = 0
+            ctypes.windll.user32.ShowWindow(hwnd, SW_HIDE)
+    except Exception:
+        # Hiding the window is a pure UX polish — never fail the
+        # URL scheme handler because a ctypes call didn't work.
+        pass
+
+
 def _cmd_open(url, host, port):
     """Invoked by the OS when a ``clashcontrol://`` URL is activated.
 
-    The URL body is currently ignored — we just ensure the daemon is
-    running. This is idempotent: if the engine is already up, return
-    success without touching it.
+    Fire-and-forget: if the engine is already running we're done; if
+    not, spawn the daemon and return immediately without waiting for
+    the HTTP probe to succeed. The invoker (ClashControl's Connect
+    button) runs its own retry loop, so blocking here just pins the
+    Windows URL-scheme console window open for no user benefit.
     """
+    _hide_console_window()
     from . import daemon, protocol
 
     if not protocol.is_protocol_url(url):
@@ -231,7 +262,7 @@ def _cmd_open(url, host, port):
         daemon._clear_pid()
 
     try:
-        daemon.start_daemon(host, port)
+        daemon.start_daemon(host, port, wait_for_ready=False)
     except RuntimeError as e:
         print(f"[CC Engine] {e}", file=sys.stderr)
         return 1
