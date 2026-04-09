@@ -28,23 +28,22 @@ pip install clashcontrol-engine[fast]
 
 ## Usage
 
-First-run install (do this once):
+**Standalone binary:** double-click the file you downloaded. That's it.
+The first run registers a `clashcontrol://` URL scheme handler for your
+user and starts the engine as a detached background process. Open
+ClashControl in your browser — it connects automatically.
 
-```bash
-clashcontrol-engine --install
-```
+**pip install:** run `clashcontrol-engine` once. Same deal — first run
+registers the handler and starts the engine, then exits. No need to keep
+a terminal open.
 
-This registers a `clashcontrol://` URL scheme handler for your user and
-starts the engine immediately. Open ClashControl in your browser — it
-connects automatically.
+From then on you don't touch the engine at all. Whenever you want to
+use it, click **Connect** in ClashControl. That navigates to
+`clashcontrol://start`, the OS routes it to the handler the first run
+registered, and the engine comes up on demand. Nothing auto-runs at
+login — the engine only runs when you ask for it.
 
-From then on, you don't need to touch the terminal. Whenever you want
-to use the local engine again, just click **Connect** in ClashControl.
-That navigates to `clashcontrol://start`, the OS routes it to the
-handler this install registered, and the engine comes up on demand.
-Nothing auto-runs at login — the engine only runs when you ask for it.
-
-To uninstall the handler and stop the engine:
+To uninstall:
 
 ```bash
 clashcontrol-engine --uninstall
@@ -55,10 +54,11 @@ clashcontrol-engine --uninstall
 If you'd rather manage the engine yourself, the primitives are:
 
 ```
-clashcontrol-engine             # run in foreground (Ctrl-C to stop)
-clashcontrol-engine --daemon    # run detached; PID at ~/.clashcontrol/engine.pid
-clashcontrol-engine --status    # is it running?
-clashcontrol-engine --stop      # stop a detached engine
+clashcontrol-engine --foreground   # run in foreground (Ctrl-C to stop, live logs)
+clashcontrol-engine --daemon       # run detached; PID at ~/.clashcontrol/engine.pid
+clashcontrol-engine --status       # is it running?
+clashcontrol-engine --stop         # stop a detached engine
+clashcontrol-engine --uninstall    # remove URL handler + stop engine
 ```
 
 ### Options
