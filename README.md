@@ -28,11 +28,38 @@ pip install clashcontrol-engine[fast]
 
 ## Usage
 
+First-run install (do this once):
+
 ```bash
-clashcontrol-engine
+clashcontrol-engine --install
 ```
 
-That's it. Open ClashControl in your browser, enable the **Local Clash Engine** addon in Settings, and run clash detection as usual.
+This registers a `clashcontrol://` URL scheme handler for your user and
+starts the engine immediately. Open ClashControl in your browser — it
+connects automatically.
+
+From then on, you don't need to touch the terminal. Whenever you want
+to use the local engine again, just click **Connect** in ClashControl.
+That navigates to `clashcontrol://start`, the OS routes it to the
+handler this install registered, and the engine comes up on demand.
+Nothing auto-runs at login — the engine only runs when you ask for it.
+
+To uninstall the handler and stop the engine:
+
+```bash
+clashcontrol-engine --uninstall
+```
+
+### Manual control
+
+If you'd rather manage the engine yourself, the primitives are:
+
+```
+clashcontrol-engine             # run in foreground (Ctrl-C to stop)
+clashcontrol-engine --daemon    # run detached; PID at ~/.clashcontrol/engine.pid
+clashcontrol-engine --status    # is it running?
+clashcontrol-engine --stop      # stop a detached engine
+```
 
 ### Options
 
@@ -45,6 +72,7 @@ That's it. Open ClashControl in your browser, enable the **Local Clash Engine** 
 
 - `CC_ENGINE_PORT` — same as `--port`
 - `CC_ENGINE_HOST` — same as `--host`
+- `CC_ENGINE_STATE_DIR` — where the PID and log files live (default `~/.clashcontrol`)
 
 ## What it does
 
