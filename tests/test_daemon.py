@@ -163,6 +163,42 @@ def test_start_daemon_refuses_double_launch(isolated_state):
         daemon.stop_daemon(timeout=10.0)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="subprocess detachment semantics differ on Windows CI",
+)
+def test_start_daemon_fire_and_forget_returns_immediately(isolated_state):
+    """Regression: the URL scheme handler on Windows pinned a console
+    window open for up to 10s because ``start_daemon`` blocked on the
+    HTTP probe. ``wait_for_ready=False`` must return as soon as the
+    child is spawned — long before the server binds its socket — so
+    the parent process (and its terminal window) can exit.
+    """
+    port = _free_port()
+    try:
+        t0 = time.time()
+        pid = daemon.start_daemon(
+            "127.0.0.1", port, wait_seconds=15.0, wait_for_ready=False
+        )
+        elapsed = time.time() - t0
+
+        # Returned fast — no HTTP probing, no 10s deadline. Be generous
+        # with the bound to avoid flakes on slow CI, but strict enough
+        # to catch the old probe loop (which would eat ~15s here since
+        # we never actually spawn a real server child in this test).
+        assert elapsed < 2.0, f"expected <2s, took {elapsed:.2f}s"
+        assert pid > 0
+
+        # Provisional PID file written synchronously so concurrent
+        # --open invocations or a rapid --status see the spawn in
+        # progress.
+        entry = daemon._read_pid()
+        assert entry is not None
+        assert entry[0] == pid
+    finally:
+        daemon.stop_daemon(timeout=10.0)
+
+
 # ── Startup I/O bootstrap ──────────────────────────────────────────
 
 def test_configure_io_survives_legacy_parent_encoding():

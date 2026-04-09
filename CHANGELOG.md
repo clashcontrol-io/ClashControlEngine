@@ -2,6 +2,21 @@
 
 ## 0.2.1 — 2026-04-09
 
+- **URL-scheme handler is now fire-and-forget.** Clicking Connect in
+  ClashControl pinned a Windows console window open for up to ten
+  seconds because ``clashcontrol-engine --open`` blocked on the HTTP
+  readiness probe inside ``start_daemon``. Two changes fix this:
+  - ``start_daemon`` learns a ``wait_for_ready`` parameter. When
+    False, the parent spawns the child, writes a provisional PID
+    file, and returns immediately instead of polling for up to ten
+    seconds. ``_cmd_open`` uses this mode — the invoker (ClashControl
+    itself) runs its own connection retry loop, so blocking the
+    URL-scheme parent serves no purpose.
+  - ``_cmd_open`` hides its attached console window via
+    ``ShowWindow(GetConsoleWindow(), SW_HIDE)`` as its very first
+    action on Windows. The window is still visible briefly during
+    PyInstaller bootloader extraction (that runs before any of our
+    Python code), but disappears the instant our code starts.
 - **Self-installing binary.** The downloaded PyInstaller executable
   now copies itself to a canonical per-user location on first run, and
   the URL scheme handler + daemon spawn both reference that canonical
