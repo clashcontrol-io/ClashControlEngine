@@ -8,6 +8,13 @@
   the downloaded PyInstaller binary on any platform — that's the whole
   setup. The daemon spawner is frozen-aware, so both `pip install` and
   the standalone binaries follow the same path.
+- **Linux/macOS release assets are now tarballs** so the executable bit
+  is preserved end-to-end. No more `chmod +x` on download. Windows
+  continues to ship a raw `.exe`.
+- **README restructured** to treat the standalone binaries as the only
+  documented install path for end users; the `pip install` route moves
+  to a short "Development" section aimed at contributors working from
+  source.
 - **Engine persistence via URL scheme.** On subsequent visits, clicking
   **Connect** in ClashControl navigates to `clashcontrol://start`, which
   the OS routes to the registered handler and launches the engine on
