@@ -22,8 +22,8 @@ def main():
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
-        '--install', action='store_true',
-        help='Register the clashcontrol:// URL scheme and start the engine now',
+        '--foreground', action='store_true',
+        help='Run the HTTP/WebSocket server in the foreground (Ctrl-C to stop)',
     )
     mode.add_argument(
         '--uninstall', action='store_true',
@@ -42,14 +42,16 @@ def main():
         help='Report whether the engine is running and exit',
     )
     mode.add_argument(
+        '--install', action='store_true',
+        help=argparse.SUPPRESS,  # Kept as an explicit alias for the default
+    )
+    mode.add_argument(
         '--open', metavar='URL', default=None,
         help=argparse.SUPPRESS,  # Invoked by the URL scheme handler
     )
 
     args = parser.parse_args()
 
-    if args.install:
-        sys.exit(_cmd_install(args.host, args.port))
     if args.uninstall:
         sys.exit(_cmd_uninstall())
     if args.daemon:
@@ -60,12 +62,18 @@ def main():
         sys.exit(_cmd_status())
     if args.open is not None:
         sys.exit(_cmd_open(args.open, args.host, args.port))
+    if args.foreground:
+        try:
+            from .server import run_server
+            run_server(host=args.host, port=args.port)
+        except KeyboardInterrupt:
+            sys.exit(0)
+        return
 
-    try:
-        from .server import run_server
-        run_server(host=args.host, port=args.port)
-    except KeyboardInterrupt:
-        sys.exit(0)
+    # Default: first-run install flow. Idempotent — safe to invoke every
+    # time. Double-clicking a PyInstaller binary lands here, which is what
+    # makes the flow genuinely one-click.
+    sys.exit(_cmd_install(args.host, args.port))
 
 
 def _cmd_install(host, port):

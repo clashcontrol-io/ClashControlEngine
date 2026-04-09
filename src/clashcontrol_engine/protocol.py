@@ -26,6 +26,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import daemon
+
 __all__ = [
     "SCHEME",
     "install_protocol",
@@ -57,9 +59,10 @@ def _macos_install() -> Path:
     macos_dir.mkdir(parents=True, exist_ok=True)
 
     launcher = macos_dir / "clashcontrol-engine-launcher"
+    argv = daemon.engine_argv("--daemon")
     launcher.write_text(
         "#!/bin/bash\n"
-        f'exec {_shell_quote(sys.executable)} -m clashcontrol_engine --daemon\n'
+        f'exec {" ".join(_shell_quote(a) for a in argv)}\n'
     )
     launcher.chmod(0o755)
 
@@ -125,9 +128,8 @@ def _linux_install() -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     # %u is the per-desktop-entry placeholder for a single URL; the engine
     # ignores its value and just starts the daemon.
-    exec_cmd = (
-        f'{_shell_quote(sys.executable)} -m clashcontrol_engine --open %u'
-    )
+    argv = daemon.engine_argv("--open", "%u")
+    exec_cmd = " ".join(_shell_quote(a) for a in argv)
     path.write_text(
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -163,11 +165,15 @@ def _linux_uninstall() -> bool:
 def _windows_install() -> str:
     import winreg  # type: ignore[import-not-found]
 
-    exe = sys.executable
-    pyw = Path(exe).with_name("pythonw.exe")
-    if pyw.exists():
-        exe = str(pyw)
-    command = f'"{exe}" -m clashcontrol_engine --open "%1"'
+    argv = daemon.engine_argv("--open", "%1")
+    # On a pip install, prefer pythonw.exe (no console flash) over python.exe.
+    if not getattr(sys, "frozen", False):
+        pyw = Path(argv[0]).with_name("pythonw.exe")
+        if pyw.exists():
+            argv[0] = str(pyw)
+    command = " ".join(
+        f'"{a}"' if (" " in a or a == "%1") else a for a in argv
+    )
 
     key_path = f"Software\\Classes\\{SCHEME}"
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:

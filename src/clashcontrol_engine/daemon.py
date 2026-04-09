@@ -23,7 +23,22 @@ __all__ = [
     "current_status",
     "start_daemon",
     "stop_daemon",
+    "engine_argv",
 ]
+
+
+def engine_argv(*extra_args) -> list:
+    """Return the argv list that re-invokes the engine with *extra_args*.
+
+    Works for both ``pip install``-style environments (invokes the current
+    Python interpreter with ``-m clashcontrol_engine``) and PyInstaller
+    single-file binaries (invokes the frozen executable directly). Used by
+    ``start_daemon`` and the URL scheme handler so every path launches the
+    engine the same way regardless of how it was installed.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, *extra_args]
+    return [sys.executable, "-m", "clashcontrol_engine", *extra_args]
 
 
 def state_dir() -> Path:
@@ -164,10 +179,7 @@ def start_daemon(host: str, port: int, wait_seconds: float = 10.0) -> int:
         _clear_pid()
 
     log = log_file().open("ab")
-    cmd = [
-        sys.executable, "-m", "clashcontrol_engine",
-        "--host", host, "--port", str(port),
-    ]
+    cmd = engine_argv("--foreground", "--host", host, "--port", str(port))
 
     popen_kwargs = dict(
         stdin=subprocess.DEVNULL,
