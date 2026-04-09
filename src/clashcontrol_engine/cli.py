@@ -2,6 +2,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 
 def main():
@@ -77,30 +78,62 @@ def main():
 
 
 def _cmd_install(host, port):
-    """First-run install: register URL scheme + start the engine immediately."""
-    from . import daemon, protocol
+    """First-run install: self-install + URL scheme + start the engine.
 
+    Steps, in order:
+      1. Stop any previously running daemon so the canonical binary
+         path is unlocked and can be overwritten with a fresh version.
+      2. Copy the currently running frozen binary to the canonical
+         per-user install location (no-op for pip installs).
+      3. Register the ``clashcontrol://`` URL scheme handler. The
+         handler command resolves through ``daemon.engine_argv``, so
+         it will point at the install location, not at the download.
+      4. Start a fresh daemon from the canonical install location.
+      5. Tell the user it's safe to delete the downloaded binary.
+    """
+    from . import daemon, install, protocol
+
+    # 1. Stop any prior daemon so we can overwrite its on-disk binary.
+    state, info = daemon.current_status()
+    if state == "running":
+        prior_pid = info.get("pid")
+        print(f"[CC Engine] Stopping previous engine (pid={prior_pid}) to upgrade")
+        daemon.stop_daemon(timeout=10.0)
+    elif state == "stale":
+        daemon._clear_pid()
+
+    # 2. Copy ourselves to the canonical install location. Frozen binary
+    #    only — a pip install is already in a stable site-packages dir
+    #    and has nothing to copy.
+    source_path = Path(sys.executable).resolve() if install.is_frozen() else None
+    installed = install.ensure_installed()
+    relocated = (
+        installed is not None
+        and source_path is not None
+        and source_path != installed.resolve()
+    )
+    if relocated:
+        print(f"[CC Engine] Installed engine binary to {installed}")
+
+    # 3. Register URL scheme. ``protocol.install_protocol`` builds its
+    #    command through ``daemon.engine_argv``, which now prefers the
+    #    freshly installed canonical path.
     location = protocol.install_protocol()
     print(f"[CC Engine] Registered clashcontrol:// handler at {location}")
 
-    state, info = daemon.current_status()
-    if state == "running":
-        running_host = info.get("host", host)
-        running_port = info.get("port", port)
-        print(
-            f"[CC Engine] Engine already running (pid={info['pid']}) on "
-            f"http://{running_host}:{running_port}"
-        )
-    else:
-        if state == "stale":
-            # Tidy up a leftover file from a previous crash
-            daemon._clear_pid()
-        try:
-            pid = daemon.start_daemon(host, port)
-        except RuntimeError as e:
-            print(f"[CC Engine] {e}", file=sys.stderr)
-            return 1
-        print(f"[CC Engine] Engine started (pid={pid}) on http://{host}:{port}")
+    # 4. Start the engine. ``daemon.start_daemon`` also routes through
+    #    ``engine_argv``, so the child process is spawned from the
+    #    canonical path — not from ~/Downloads.
+    try:
+        pid = daemon.start_daemon(host, port)
+    except RuntimeError as e:
+        print(f"[CC Engine] {e}", file=sys.stderr)
+        return 1
+    print(f"[CC Engine] Engine started (pid={pid}) on http://{host}:{port}")
+
+    # 5. Tell the user the download is now disposable.
+    if relocated:
+        print(f"[CC Engine] You can safely delete {source_path}")
 
     print()
     print("[CC Engine] Install complete.")
@@ -111,10 +144,13 @@ def _cmd_install(host, port):
 
 
 def _cmd_uninstall():
-    from . import daemon, protocol
+    from . import daemon, install, protocol
 
     removed = protocol.uninstall_protocol()
     stopped = daemon.stop_daemon()
+    # Stop must happen before remove_installed — on Windows the install
+    # binary is locked for the lifetime of the daemon process.
+    deleted = install.remove_installed()
 
     if removed:
         print("[CC Engine] clashcontrol:// handler removed")
@@ -124,6 +160,8 @@ def _cmd_uninstall():
         print("[CC Engine] Stopped running engine")
     else:
         print("[CC Engine] Engine was not running")
+    if deleted:
+        print(f"[CC Engine] Removed installed binary at {install.install_path()}")
     return 0
 
 

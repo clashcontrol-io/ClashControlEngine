@@ -35,9 +35,18 @@ def engine_argv(*extra_args) -> list:
     single-file binaries (invokes the frozen executable directly). Used by
     ``start_daemon`` and the URL scheme handler so every path launches the
     engine the same way regardless of how it was installed.
+
+    For frozen binaries, prefers the canonical install location over the
+    currently running executable — the user may be running from
+    ``~/Downloads`` and intend to delete that file after install
+    completes. Once ``install.ensure_installed`` has placed a copy at
+    the install path, every subsequent spawn points there instead.
     """
     if getattr(sys, "frozen", False):
-        return [sys.executable, *extra_args]
+        from . import install as _install
+        canonical = _install.installed_binary()
+        binary = str(canonical) if canonical is not None else sys.executable
+        return [binary, *extra_args]
     return [sys.executable, "-m", "clashcontrol_engine", *extra_args]
 
 

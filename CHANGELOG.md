@@ -2,6 +2,24 @@
 
 ## 0.2.1 — 2026-04-09
 
+- **Self-installing binary.** The downloaded PyInstaller executable
+  now copies itself to a canonical per-user location on first run, and
+  the URL scheme handler + daemon spawn both reference that canonical
+  path instead of whatever directory the user downloaded to. After
+  install, the download is disposable — delete it from `~/Downloads`,
+  the integration keeps working. Install locations:
+  - Windows: `%LOCALAPPDATA%\ClashControl\clashcontrol-engine.exe`
+  - macOS:   `~/Library/Application Support/ClashControl/clashcontrol-engine`
+  - Linux:   `$XDG_DATA_HOME/clashcontrol/clashcontrol-engine`
+    (default `~/.local/share/clashcontrol/clashcontrol-engine`)
+  Override the install directory with `CC_ENGINE_INSTALL_DIR` if
+  needed. `--uninstall` now also removes the canonical binary.
+- **Install flow is upgrade-aware.** Re-running the install from a
+  newer downloaded binary now stops the existing daemon first, then
+  overwrites the canonical binary, then re-registers and re-starts.
+  Previously, an upgrade silently no-op'd because the "already
+  running" branch short-circuited before the new binary ever took
+  over.
 - **Fix one-click install on Windows.** The detached daemon crashed
   silently on startup because `subprocess.Popen(stdout=log_file)` handed
   the child a cp1252-encoded stdout, and the startup banner contained
