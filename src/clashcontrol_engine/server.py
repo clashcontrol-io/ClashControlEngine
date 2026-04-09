@@ -122,10 +122,10 @@ def run_server(host=None, port=None):
     ws_port = port + 1
 
     print(f"[CC Engine] ClashControl Local Engine v{__version__}")
-    print(f"[CC Engine] HTTP  → http://{host}:{port}")
-    print(f"[CC Engine] WS    → ws://{host}:{ws_port}")
-    print(f"[CC Engine] Cores → {multiprocessing.cpu_count()}")
-    print(f"[CC Engine] Accel → {', '.join(BACKENDS)}")
+    print(f"[CC Engine] HTTP  -> http://{host}:{port}")
+    print(f"[CC Engine] WS    -> ws://{host}:{ws_port}")
+    print(f"[CC Engine] Cores -> {multiprocessing.cpu_count()}")
+    print(f"[CC Engine] Accel -> {', '.join(BACKENDS)}")
     print(f"[CC Engine] Ready for connections")
 
     # Publish our PID so --stop / --status (and ClashControl's "already
@@ -152,14 +152,14 @@ def run_server(host=None, port=None):
 
         _loop.run_until_complete(_start_ws())
     except ImportError:
-        print("[CC Engine] websockets not installed — progress updates disabled")
+        print("[CC Engine] websockets not installed - progress updates disabled")
         print("[CC Engine] Install with: pip install websockets")
-        # Keep running with just HTTP — block main thread
+        # Keep running with just HTTP - block main thread
         try:
             import signal
             signal.pause()
         except (AttributeError, KeyboardInterrupt):
-            # signal.pause() not available on Windows — use thread join
+            # signal.pause() not available on Windows - use thread join
             try:
                 http_thread.daemon = False
                 http_thread.join()
