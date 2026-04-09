@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.2 — 2026-04-09
+
+- **No more cmd window on Windows.** The Windows PyInstaller build now
+  ships as a GUI-subsystem (`--noconsole`) binary, so nothing flashes
+  on the desktop when the `clashcontrol://` URL handler fires or when
+  the user double-clicks the downloaded installer from Explorer. The
+  cost of going windowed — no stdio at all in the default launch path
+  — is absorbed by a new bootstrap rescue layer so terminal users and
+  the install flow don't lose their feedback:
+  - `_bootstrap.configure_io` now tries `AttachConsole(ATTACH_PARENT_PROCESS)`
+    when stdio is dead at entry, which restores visible output for
+    `--foreground`, `--status`, `--help` and friends when the user
+    launched us from `cmd.exe`.
+  - When there is no parent console (double-click or URL-scheme
+    launch), `sys.stdout` / `sys.stderr` are swapped for a silent
+    `_NullStream` so `print()` becomes a no-op instead of an
+    `AttributeError`, and a new `has_console_output()` predicate lets
+    the CLI know output is going nowhere.
+  - `cli._show_result()` uses that predicate to pop a Windows
+    `MessageBox` for the final install/uninstall verdict only when
+    the console path is silent — terminal users aren't nagged with a
+    dialog on top of the progress lines they've already seen.
+- New regression tests cover the `--noconsole` bootloader state
+  (`sys.stdout = sys.stderr = None`), the live-stdio common case, and
+  the `_NullStream` `TextIOBase` subset that `print` / `traceback` /
+  `reconfigure` actually touch.
+
 ## 0.2.1 — 2026-04-09
 
 - **URL-scheme handler is now fire-and-forget.** Clicking Connect in
