@@ -35,8 +35,15 @@ jobs:
 
       - name: Build executable (Windows)
         if: runner.os == 'Windows'
+        # --noconsole produces a GUI-subsystem binary: no cmd window
+        # appears when the URL scheme handler fires, and no console
+        # flashes when a user double-clicks the installer from
+        # Explorer. _bootstrap.configure_io() rescues --foreground /
+        # --status / --help output by AttachConsole-ing to the parent
+        # cmd.exe when invoked from a terminal, and falls back to a
+        # silent sink + MessageBox surface for the double-click case.
         run: |
-          pyinstaller --onefile --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --hidden-import websockets --hidden-import scipy.spatial --collect-submodules scipy src/clashcontrol_engine/__main__.py
+          pyinstaller --onefile --noconsole --name ${{ matrix.artifact }} --noupx --bootloader-ignore-signals --hidden-import websockets --hidden-import scipy.spatial --collect-submodules scipy src/clashcontrol_engine/__main__.py
 
       - name: Build executable (Unix)
         if: runner.os != 'Windows'

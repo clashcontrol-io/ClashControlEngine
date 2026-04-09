@@ -233,6 +233,88 @@ def test_configure_io_survives_legacy_parent_encoding():
     )
 
 
+def test_configure_io_revives_dead_stdio():
+    """Regression: a Windows GUI-subsystem (``--noconsole``) build has
+    ``sys.stdout`` / ``sys.stderr`` set to ``None`` by the PyInstaller
+    bootloader. Any ``print()`` in the install flow would crash with
+    ``AttributeError: 'NoneType' object has no attribute 'write'``.
+    ``configure_io`` must swap ``None`` streams for a silent sink so
+    ``print`` becomes a no-op, and ``has_console_output`` must return
+    False so the CLI knows to surface results via a ``MessageBox``
+    instead of printing into the void.
+    """
+    snippet = (
+        "import sys\n"
+        "sys.stdout = None\n"
+        "sys.stderr = None\n"
+        "from clashcontrol_engine._bootstrap import (\n"
+        "    configure_io, has_console_output,\n"
+        ")\n"
+        "configure_io()\n"
+        "print('should not crash')\n"
+        "print('also stderr', file=sys.stderr)\n"
+        "assert has_console_output() is False, (\n"
+        "    'expected has_console_output()==False after reviving dead stdio'\n"
+        ")\n"
+        "import os; os._exit(0)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        f"child crashed after configure_io revived None stdio\n"
+        f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+
+
+def test_has_console_output_true_for_live_stdio():
+    """In the common case — a pip install or a console-subsystem build
+    launched from a terminal — stdio is already usable at entry, and
+    ``has_console_output`` must report True so ``_show_result`` doesn't
+    wastefully pop a MessageBox on top of progress lines the user has
+    already seen in the terminal.
+    """
+    snippet = (
+        "from clashcontrol_engine._bootstrap import (\n"
+        "    configure_io, has_console_output,\n"
+        ")\n"
+        "configure_io()\n"
+        "assert has_console_output() is True, (\n"
+        "    'expected has_console_output()==True when stdio was alive at entry'\n"
+        ")\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        f"assertion failed\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+
+
+def test_null_stream_quacks_like_a_text_stream():
+    """``_NullStream`` has to support the subset of the ``TextIOBase``
+    interface that ``print``, ``traceback``, and ``configure_io``'s
+    UTF-8 reconfigure loop touch. If any of those methods are missing
+    the first ``print`` after ``configure_io`` crashes the install
+    flow on a double-click build.
+    """
+    from clashcontrol_engine._bootstrap import _NullStream
+
+    s = _NullStream()
+    # The attributes print() / traceback / reconfigure actually touch.
+    assert s.write("anything") == 0
+    s.flush()
+    assert s.isatty() is False
+    s.reconfigure(encoding="utf-8", errors="replace")  # must not raise
+    s.close()
+    assert s.encoding == "utf-8"
+    assert s.errors == "replace"
+
+
 # ── Protocol module ────────────────────────────────────────────────
 
 def test_is_protocol_url():
