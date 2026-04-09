@@ -4,46 +4,25 @@ Local clash detection server for [ClashControl](https://clashcontrol.io) — mul
 
 ## Install
 
-### Standalone (no Python required)
+Download the file for your OS and open it. That's the whole setup.
 
-Download the latest executable for your platform:
+- **Windows** — [clashcontrol-engine-win.exe](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-win.exe). Double-click.
+- **macOS** — [clashcontrol-engine-mac.tar.gz](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-mac.tar.gz). Double-click the `.tar.gz` (Finder extracts it), then double-click the binary inside.
+- **Linux** — [clashcontrol-engine-linux.tar.gz](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-linux.tar.gz). Extract and run:
+  ```bash
+  tar -xzf clashcontrol-engine-linux.tar.gz
+  ./clashcontrol-engine-linux
+  ```
 
-- [Windows (.exe)](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-win.exe)
-- [macOS](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-mac)
-- [Linux](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-linux)
+No Python, no `pip install`, no `chmod`, no install wizard. The executable bit is preserved through the tarball.
 
-Download, run the file, done. No install wizard needed.
-
-### pip (Python 3.8+)
-
-```bash
-pip install clashcontrol-engine
-```
-
-For faster performance (Numba JIT compilation + scipy KD-tree):
-
-```bash
-pip install clashcontrol-engine[fast]
-```
+The first run does two things and exits: registers a `clashcontrol://` URL scheme handler for your user, and starts the engine as a detached background process. Open ClashControl in your browser — it connects automatically.
 
 ## Usage
 
-**Standalone binary:** double-click the file you downloaded. That's it.
-The first run registers a `clashcontrol://` URL scheme handler for your
-user and starts the engine as a detached background process. Open
-ClashControl in your browser — it connects automatically.
+From then on, you don't touch the engine at all. Whenever you want to use it, click **Connect** in ClashControl. That navigates to `clashcontrol://start`, the OS routes it to the handler the first run registered, and the engine comes up on demand. Nothing auto-runs at login — the engine only runs when you ask for it.
 
-**pip install:** run `clashcontrol-engine` once. Same deal — first run
-registers the handler and starts the engine, then exits. No need to keep
-a terminal open.
-
-From then on you don't touch the engine at all. Whenever you want to
-use it, click **Connect** in ClashControl. That navigates to
-`clashcontrol://start`, the OS routes it to the handler the first run
-registered, and the engine comes up on demand. Nothing auto-runs at
-login — the engine only runs when you ask for it.
-
-To uninstall:
+To uninstall the handler and stop the engine:
 
 ```bash
 clashcontrol-engine --uninstall
@@ -85,14 +64,22 @@ Runs an HTTP + WebSocket server on `localhost:19800` that ClashControl connects 
 | Speed (10K elements) | ~60s | ~15-20s |
 | With `[fast]` extra | — | ~1-3s |
 
-The `[fast]` extra adds Numba JIT compilation (~20-50x per-core speedup on triangle intersection) and scipy KD-tree for distance calculations. Without it, the engine runs the same algorithms in pure Python/numpy.
+The standalone binaries bundle Numba JIT compilation and scipy KD-tree (the `[fast]` extra) for ~20-50x per-core speedup on triangle intersection. Without them the engine runs the same algorithms in pure Python/numpy.
 
 The browser engine is used automatically as a fallback when this server isn't running.
 
-## Requirements
+## Development
 
-- Python 3.8+
-- numpy
+Contributors can install from source with pip:
+
+```bash
+git clone https://github.com/clashcontrol-io/ClashControlEngine
+cd ClashControlEngine
+pip install -e ".[fast]"
+pytest tests/
+```
+
+This gives you the same `clashcontrol-engine` CLI but pointing at the working tree, so edits are picked up live.
 
 ## License
 

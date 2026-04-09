@@ -61,7 +61,20 @@ jobs:
         run: |
           dist\${{ matrix.artifact }} --help || exit 0
 
-      - name: Upload release asset
+      - name: Package non-Windows binary as tarball
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar -czvf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
+
+      - name: Upload Windows release asset
+        if: runner.os == 'Windows'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.artifact }}
+
+      - name: Upload non-Windows release asset
+        if: runner.os != 'Windows'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.artifact }}.tar.gz
