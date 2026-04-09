@@ -104,7 +104,7 @@ def _cmd_install(host, port):
 
     print()
     print("[CC Engine] Install complete.")
-    print("[CC Engine] Open ClashControl — it will connect automatically.")
+    print("[CC Engine] Open ClashControl - it will connect automatically.")
     print("[CC Engine] Next time, just click Connect in ClashControl and the")
     print("[CC Engine] engine will start on demand. Nothing auto-runs at login.")
     return 0

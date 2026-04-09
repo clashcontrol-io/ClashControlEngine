@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.1 — 2026-04-09
+
+- **Fix one-click install on Windows.** The detached daemon crashed
+  silently on startup because `subprocess.Popen(stdout=log_file)` handed
+  the child a cp1252-encoded stdout, and the startup banner contained
+  characters (`->` arrows, em-dashes) that cp1252 couldn't encode. The
+  child raised `UnicodeEncodeError` before it could bind its port,
+  leaving the clashcontrol:// handler to spawn a process that never
+  became reachable. Fix is two layers:
+  - `__main__.py` now reconfigures stdout/stderr to UTF-8 with
+    `errors="replace"` at the very first opportunity, via a new
+    `_bootstrap.configure_io` helper. Guards against any future
+    non-ASCII print crashing a log-redirected child.
+  - The startup banner and install messages are now pure ASCII
+    (`->` instead of `→`, `-` instead of em-dashes) as a belt to go
+    with the UTF-8 reconfigure suspenders.
+- Regression test spawns a subprocess under
+  `PYTHONIOENCODING=ascii:strict` and verifies `configure_io` lets it
+  print U+2192 and U+2014 without crashing.
+
 ## 0.2.0 — 2026-04-09
 
 - **One-click install.** Running `clashcontrol-engine` with no arguments

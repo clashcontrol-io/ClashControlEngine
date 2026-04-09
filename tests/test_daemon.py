@@ -2,6 +2,7 @@
 import json
 import os
 import socket
+import subprocess
 import sys
 import time
 
@@ -160,6 +161,40 @@ def test_start_daemon_refuses_double_launch(isolated_state):
             daemon.start_daemon("127.0.0.1", port, wait_seconds=2.0)
     finally:
         daemon.stop_daemon(timeout=10.0)
+
+
+# ── Startup I/O bootstrap ──────────────────────────────────────────
+
+def test_configure_io_survives_legacy_parent_encoding():
+    """Regression: detached daemons on Windows crashed before binding
+    their port because ``subprocess.Popen(stdout=log_file)`` handed the
+    child a cp1252 stdout, and any non-ASCII character in the startup
+    banner raised ``UnicodeEncodeError``. ``configure_io`` must upgrade
+    stdout/stderr to UTF-8 so a legacy parent encoding can never kill
+    the child, regardless of what characters the banner happens to
+    contain today or in the future.
+    """
+    snippet = (
+        "import sys\n"
+        "from clashcontrol_engine._bootstrap import configure_io\n"
+        "configure_io()\n"
+        # Directly exercise the character class that used to crash:
+        # U+2192 and U+2014. Under PYTHONIOENCODING=ascii:strict these
+        # would raise UnicodeEncodeError before configure_io runs.
+        "sys.stdout.write('\\u2192 \\u2014 banner ok\\n')\n"
+        "sys.stderr.write('\\u2192 \\u2014 banner ok\\n')\n"
+    )
+    env = {**os.environ, "PYTHONIOENCODING": "ascii:strict"}
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        env=env,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        f"child crashed under ascii:strict parent encoding\n"
+        f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
 
 
 # ── Protocol module ────────────────────────────────────────────────
