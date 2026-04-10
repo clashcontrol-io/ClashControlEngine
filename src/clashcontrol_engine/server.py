@@ -1,7 +1,8 @@
 """
 HTTP + WebSocket server for ClashControl local clash detection.
 
-- HTTP on PORT (default 19800): GET /status, POST /detect, OPTIONS (CORS)
+- HTTP on PORT (default 19800): GET /status, GET /update, POST /update,
+  POST /detect, OPTIONS (CORS)
 - WebSocket on PORT+1 (default 19801): progress updates during detection
 """
 import asyncio
@@ -17,6 +18,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 
 from . import __version__, daemon as _daemon
+from . import updater as _updater
 from .engine import detect_clashes, BACKENDS
 
 PORT = int(os.environ.get('CC_ENGINE_PORT', 19800))
@@ -24,6 +26,8 @@ HOST = os.environ.get('CC_ENGINE_HOST', 'localhost')
 
 _ws_clients = set()
 _loop = None
+_active_host = HOST
+_active_port = PORT
 
 # ---------------------------------------------------------------------------
 # Update-check cache (queried lazily by GET /update)
@@ -82,12 +86,7 @@ def _query_github_latest():
 
 
 def _is_newer(candidate, current):
-    def _parse(v):
-        try:
-            return tuple(int(x) for x in v.split('.'))
-        except Exception:
-            return (0,)
-    return _parse(candidate) > _parse(current)
+    return _updater.is_newer(candidate, current)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -107,7 +106,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        if self.path == '/detect':
+        if self.path == '/update':
+            self._json_response(202, _updater.trigger(_active_host, _active_port))
+        elif self.path == '/detect':
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
 
@@ -185,10 +186,12 @@ async def _ws_handler(websocket):
 
 def run_server(host=None, port=None):
     """Start the HTTP + WebSocket server."""
-    global _loop
+    global _loop, _active_host, _active_port
 
     host = host or HOST
     port = port or PORT
+    _active_host = host
+    _active_port = port
     ws_port = port + 1
 
     print(f"[CC Engine] ClashControl Local Engine v{__version__}")
