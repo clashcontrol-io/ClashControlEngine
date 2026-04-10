@@ -3,49 +3,73 @@ name: Auto Release
 on:
   push:
     branches: [main]
-    paths:
-      - 'pyproject.toml'
-      - 'src/clashcontrol_engine/__init__.py'
 
-permissions:
-  contents: write
-
+# Skip the version-bump commit this workflow pushes back, avoiding an
+# infinite loop.  GitHub also honours [skip ci] in the commit message,
+# but the explicit actor check is a belt-and-suspenders guard.
 jobs:
   release:
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Use a token that can push back to main
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read version from pyproject.toml
+      - name: Bump patch version
         id: version
         run: |
-          VERSION=$(python -c "
+          CURRENT=$(python -c "
           import re, sys
           m = re.search(r'^version\s*=\s*\"([^\"]+)\"', open('pyproject.toml').read(), re.M)
           if not m:
               sys.exit('Could not find version in pyproject.toml')
           print(m.group(1))
           ")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected version: $VERSION"
 
-      - name: Check whether this tag already exists
-        id: tag_check
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEW="${MAJOR}.${MINOR}.$((PATCH + 1))"
+
+          echo "current=$CURRENT"   >> "$GITHUB_OUTPUT"
+          echo "version=$NEW"       >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEW"          >> "$GITHUB_OUTPUT"
+          echo "Bumping $CURRENT -> $NEW"
+
+      - name: Write new version to files
         run: |
-          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag ${{ steps.version.outputs.tag }} already exists — skipping release."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Tag ${{ steps.version.outputs.tag }} is new — creating release."
-          fi
+          python - <<'PY'
+          import re
+          new = "${{ steps.version.outputs.version }}"
+          files = [
+              ("pyproject.toml",
+               r'(^version\s*=\s*")[^"]+',
+               r'\g<1>' + new),
+              ("src/clashcontrol_engine/__init__.py",
+               r'(__version__\s*=\s*")[^"]+',
+               r'\g<1>' + new),
+          ]
+          for path, pattern, repl in files:
+              text = open(path).read()
+              text = re.sub(pattern, repl, text, flags=re.M)
+              open(path, "w").write(text)
+              print(f"Updated {path}")
+          PY
+
+      - name: Commit and push version bump
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml src/clashcontrol_engine/__init__.py
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }} [skip ci]"
+          git push origin main
 
       - name: Create GitHub release
-        if: steps.tag_check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
