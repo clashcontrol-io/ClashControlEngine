@@ -1,7 +1,8 @@
 """
 HTTP + WebSocket server for ClashControl local clash detection.
 
-- HTTP on PORT (default 19800): GET /status, POST /detect, OPTIONS (CORS)
+- HTTP on PORT (default 19800): GET /status, GET /update, POST /update,
+  POST /detect, OPTIONS (CORS)
 - WebSocket on PORT+1 (default 19801): progress updates during detection
 """
 import asyncio
@@ -9,10 +10,15 @@ import atexit
 import json
 import multiprocessing
 import os
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 from . import __version__, daemon as _daemon
+from . import updater as _updater
 from .engine import detect_clashes, BACKENDS
 
 PORT = int(os.environ.get('CC_ENGINE_PORT', 19800))
@@ -20,6 +26,67 @@ HOST = os.environ.get('CC_ENGINE_HOST', 'localhost')
 
 _ws_clients = set()
 _loop = None
+_active_host = HOST
+_active_port = PORT
+
+# ---------------------------------------------------------------------------
+# Update-check cache (queried lazily by GET /update)
+# ---------------------------------------------------------------------------
+_GITHUB_RELEASES_URL = (
+    'https://api.github.com/repos/clashcontrol-io/ClashControlEngine/releases/latest'
+)
+_UPDATE_CACHE_TTL = 3600  # seconds
+_update_cache = None  # type: dict | None
+_update_cache_time: float = 0.0
+_update_cache_lock = threading.Lock()
+
+
+def _fetch_update_info():
+    """Return {current, latest, update_available, release_url}, cached for 1 h."""
+    global _update_cache, _update_cache_time
+
+    now = time.monotonic()
+    with _update_cache_lock:
+        if _update_cache is not None and (now - _update_cache_time) < _UPDATE_CACHE_TTL:
+            return _update_cache
+
+        result = _query_github_latest()
+        _update_cache = result
+        _update_cache_time = now
+        return result
+
+
+def _query_github_latest():
+    try:
+        req = Request(
+            _GITHUB_RELEASES_URL,
+            headers={'User-Agent': f'clashcontrol-engine/{__version__}'},
+        )
+        with urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+
+        latest_tag = data.get('tag_name', '').lstrip('v')
+        release_url = data.get('html_url', '')
+        update_available = _is_newer(latest_tag, __version__)
+
+        return {
+            'current': __version__,
+            'latest': latest_tag,
+            'update_available': update_available,
+            'release_url': release_url,
+        }
+    except Exception:
+        return {
+            'current': __version__,
+            'latest': None,
+            'update_available': False,
+            'release_url': None,
+            'error': 'Unable to reach GitHub releases API',
+        }
+
+
+def _is_newer(candidate, current):
+    return _updater.is_newer(candidate, current)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -32,12 +99,16 @@ class Handler(BaseHTTPRequestHandler):
                 'cores': multiprocessing.cpu_count(),
                 'backends': BACKENDS,
             })
+        elif self.path == '/update':
+            self._json_response(200, _fetch_update_info())
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
-        if self.path == '/detect':
+        if self.path == '/update':
+            self._json_response(202, _updater.trigger(_active_host, _active_port))
+        elif self.path == '/detect':
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
 
@@ -115,10 +186,12 @@ async def _ws_handler(websocket):
 
 def run_server(host=None, port=None):
     """Start the HTTP + WebSocket server."""
-    global _loop
+    global _loop, _active_host, _active_port
 
     host = host or HOST
     port = port or PORT
+    _active_host = host
+    _active_port = port
     ws_port = port + 1
 
     print(f"[CC Engine] ClashControl Local Engine v{__version__}")
