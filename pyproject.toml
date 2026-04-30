@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clashcontrol-engine"
-version = "0.2.3"
+version = "0.2.4"
 description = "Local clash detection server for ClashControl — multi-threaded exact mesh intersection"
 readme = "README.md"
 license = "SSPL-1.0"
