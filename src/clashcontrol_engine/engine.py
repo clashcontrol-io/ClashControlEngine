@@ -94,6 +94,8 @@ def _check_pair(args):
             return {
                 'elementA': elem_a['id'],
                 'elementB': elem_b['id'],
+                'modelAId': elem_a['model_id'],
+                'modelBId': elem_b['model_id'],
                 'point': centroid.tolist(),
                 'distance': -round(depth * 1000),  # mm, negative = penetration
                 'volume': float(depth * 0.001),  # rough estimate
@@ -108,6 +110,8 @@ def _check_pair(args):
             return {
                 'elementA': elem_a['id'],
                 'elementB': elem_b['id'],
+                'modelAId': elem_a['model_id'],
+                'modelBId': elem_b['model_id'],
                 'point': midpoint.tolist(),
                 'distance': round(dist_m * 1000),  # mm, positive = gap
                 'volume': 0,
