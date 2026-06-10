@@ -74,6 +74,10 @@ def _query_github_latest():
             'latest': latest_tag,
             'update_available': update_available,
             'release_url': release_url,
+            # Aliases the ClashControl addon reads (kept alongside the
+            # original names for backward compatibility).
+            'update_version': latest_tag,
+            'update_url': release_url,
         }
     except Exception:
         return {
