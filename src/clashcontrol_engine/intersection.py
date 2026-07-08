@@ -146,6 +146,16 @@ def tri_tri_intersect(tri_a, tri_b):
     if da0 < 0.0 and da1 < 0.0 and da2 < 0.0:
         return None
 
+    # Coplanar pair: explicit touch-not-clash early-out.
+    # Flush surface contact (e.g. a wall's bottom face lying in a slab's
+    # top-face plane) is touching, not interpenetration — reporting it as
+    # a hard clash would flood every model with false positives at
+    # ordinary support contacts. Solids that truly overlap volumetrically
+    # are caught via their non-coplanar face pairs. The explicit early-out
+    # also avoids the 0/0 interval-division path for near-coplanar input.
+    if da0 == 0.0 and da1 == 0.0 and da2 == 0.0:
+        return None
+
     # Plane of triangle A
     e1ax, e1ay, e1az = v1x - v0x, v1y - v0y, v1z - v0z
     e2ax, e2ay, e2az = v2x - v0x, v2y - v0y, v2z - v0z
@@ -359,62 +369,265 @@ def bvh_intersect_pairs(node_a, tris_a, node_b, tris_b, max_points=24):
     return results
 
 
+def prepare_mesh(verts, faces):
+    """
+    Build the BVH for a mesh once, for reuse across many pair tests.
+
+    Returns an opaque prep tuple for meshes_intersect_prepared. Building
+    the BVH is the dominant per-pair cost, so callers that test the same
+    element against several others should cache this per element.
+    """
+    tris = verts[faces]  # (N, 3, 3)
+    if len(tris) == 0:
+        return None, tris
+    return build_bvh(tris)
+
+
+def meshes_intersect_prepared(prep_a, prep_b):
+    """
+    Check if two prepared meshes intersect (see prepare_mesh).
+
+    Returns (point, penetration_est_m) or None.
+    point: (3,) numpy array — centroid of sampled intersection points.
+    penetration_est_m: float — overlap of the two meshes' AABBs along the
+        minimum-overlap axis. This is a cheap, honest *upper bound* on the
+        true penetration depth (semantics: 'aabb_overlap_estimate'); the
+        previous implementation reported the length of an intersection-line
+        segment, which measures the size of the crossing region, not how
+        deep the meshes interpenetrate.
+    """
+    node_a, tris_a = prep_a
+    node_b, tris_b = prep_b
+    if node_a is None or node_b is None:
+        return None
+
+    # Single traversal: collect up to 24 intersection points in one pass
+    # (the traversal exits early on the first bbox miss anyway, so a
+    # separate cheap "probe" pass is pure duplicate work).
+    hits = bvh_intersect_pairs(node_a, tris_a, node_b, tris_b, max_points=24)
+    if not hits:
+        return None
+
+    points = np.array([h[0] for h in hits])
+    centroid = points.mean(axis=0)
+
+    # Penetration estimate: min-axis overlap of the two meshes' AABBs
+    # (root BVH nodes carry the mesh bounds).
+    overlap = (
+        np.minimum(node_a.bbox_max, node_b.bbox_max)
+        - np.maximum(node_a.bbox_min, node_b.bbox_min)
+    )
+    penetration_est = float(np.clip(overlap, 0.0, None).min())
+
+    return centroid, penetration_est
+
+
 def meshes_intersect(verts_a, faces_a, verts_b, faces_b):
     """
     Check if two meshes intersect using BVH + Möller tri-tri.
 
-    Returns (point, depth_m) or None.
-    point: (3,) numpy array — centroid of intersection points.
-    depth_m: float — approximate penetration depth in meters.
+    Returns (point, penetration_est_m) or None — see
+    meshes_intersect_prepared for the depth semantics.
     """
-    tris_a = verts_a[faces_a]  # (N, 3, 3)
-    tris_b = verts_b[faces_b]  # (M, 3, 3)
-
-    if len(tris_a) == 0 or len(tris_b) == 0:
-        return None
-
-    bvh_a, sorted_a = build_bvh(tris_a)
-    bvh_b, sorted_b = build_bvh(tris_b)
-
-    # Early exit pass — just find 3 points
-    hits = bvh_intersect_pairs(bvh_a, sorted_a, bvh_b, sorted_b, max_points=3)
-    if not hits:
-        return None
-
-    # Full pass — collect up to 24 points for accurate centroid
-    hits = bvh_intersect_pairs(bvh_a, sorted_a, bvh_b, sorted_b, max_points=24)
-
-    points = np.array([h[0] for h in hits])
-    depths = np.array([h[1] for h in hits])
-
-    centroid = points.mean(axis=0)
-    max_depth = float(depths.max())
-
-    return centroid, max_depth
+    return meshes_intersect_prepared(
+        prepare_mesh(verts_a, faces_a),
+        prepare_mesh(verts_b, faces_b),
+    )
 
 
-def mesh_min_distance(verts_a, verts_b, threshold_m):
+# ── Minimum distance (clearance / soft clash) ─────────────────────
+
+
+def _closest_points_on_tris(p, tris):
     """
-    Compute minimum distance between two vertex sets.
-    Uses scipy KD-tree if available, else brute-force with spatial hashing.
+    Closest point to *p* on each triangle in *tris* (vectorized Ericson,
+    'Real-Time Collision Detection' 5.1.5).
+
+    p: (3,) point. tris: (N, 3, 3) triangle vertices.
+    Returns (N, 3) closest points.
+    """
+    p = np.asarray(p, dtype=np.float64)
+    a = tris[:, 0].astype(np.float64)
+    b = tris[:, 1].astype(np.float64)
+    c = tris[:, 2].astype(np.float64)
+
+    ab = b - a
+    ac = c - a
+    ap = p - a
+    d1 = np.einsum('ij,ij->i', ab, ap)
+    d2 = np.einsum('ij,ij->i', ac, ap)
+
+    bp = p - b
+    d3 = np.einsum('ij,ij->i', ab, bp)
+    d4 = np.einsum('ij,ij->i', ac, bp)
+
+    cp = p - c
+    d5 = np.einsum('ij,ij->i', ab, cp)
+    d6 = np.einsum('ij,ij->i', ac, cp)
+
+    result = np.empty_like(a)
+    done = np.zeros(len(a), dtype=bool)
+
+    def _settle(mask, points):
+        m = mask & ~done
+        if m.any():
+            result[m] = points[m]
+        done[m] = True
+
+    def _safe_div(num, den):
+        den = np.where(np.abs(den) < 1e-30, 1e-30, den)
+        return num / den
+
+    # Vertex regions
+    _settle((d1 <= 0.0) & (d2 <= 0.0), a)
+    _settle((d3 >= 0.0) & (d4 <= d3), b)
+
+    vc = d1 * d4 - d3 * d2
+    v_ab = _safe_div(d1, d1 - d3)[:, None]
+    _settle((vc <= 0.0) & (d1 >= 0.0) & (d3 <= 0.0), a + v_ab * ab)
+
+    _settle((d6 >= 0.0) & (d5 <= d6), c)
+
+    vb = d5 * d2 - d1 * d6
+    w_ac = _safe_div(d2, d2 - d6)[:, None]
+    _settle((vb <= 0.0) & (d2 >= 0.0) & (d6 <= 0.0), a + w_ac * ac)
+
+    va = d3 * d6 - d5 * d4
+    w_bc = _safe_div(d4 - d3, (d4 - d3) + (d5 - d6))[:, None]
+    _settle((va <= 0.0) & ((d4 - d3) >= 0.0) & ((d5 - d6) >= 0.0),
+            b + w_bc * (c - b))
+
+    # Interior region
+    denom = _safe_div(np.ones_like(va), va + vb + vc)
+    v = (vb * denom)[:, None]
+    w = (vc * denom)[:, None]
+    _settle(np.ones(len(a), dtype=bool), a + ab * v + ac * w)
+
+    return result
+
+
+def prepare_distance(verts, faces=None):
+    """
+    Precompute clearance-query acceleration structures for one mesh:
+    a KD-tree over vertices plus (when faces are given) the triangle
+    array, a KD-tree over triangle centroids and the max triangle
+    half-diagonal (used as a safe candidate-search radius pad).
+
+    Returns a dict; 'tree' is None when scipy is unavailable, in which
+    case callers fall back to the spatial-hash vertex-only path.
+    """
+    prep = {
+        'verts': verts,
+        'tree': None,
+        'tris': None,
+        'tri_tree': None,
+        'tri_pad': 0.0,
+    }
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError:
+        return prep
+
+    prep['tree'] = cKDTree(verts)
+
+    if faces is not None and len(faces) > 0:
+        tris = verts[faces]
+        centroids = tris.mean(axis=1)
+        # Max distance from a centroid to any of its triangle's vertices:
+        # a safe pad so a centroid radius query can't miss a triangle
+        # whose surface is within the search bound.
+        pad = float(np.linalg.norm(
+            tris - centroids[:, None, :], axis=2).max())
+        prep['tris'] = tris
+        prep['tri_tree'] = cKDTree(centroids)
+        prep['tri_pad'] = pad
+
+    return prep
+
+
+def _refine_point_to_tris(points, target_prep, bound_m, best):
+    """
+    Improve (dist, point, closest) *best* with exact point-to-triangle
+    distances from each point in *points* to triangles of *target_prep*
+    whose centroid lies within bound_m + pad.
+    """
+    tri_tree = target_prep['tri_tree']
+    if tri_tree is None:
+        return best
+
+    tris = target_prep['tris']
+    radius = bound_m + target_prep['tri_pad']
+    candidate_lists = tri_tree.query_ball_point(np.asarray(points, dtype=np.float64), r=radius)
+
+    best_dist, best_p, best_q = best
+    for i, cand in enumerate(candidate_lists):
+        if not cand:
+            continue
+        p = points[i]
+        closest = _closest_points_on_tris(p, tris[cand])
+        dists = np.linalg.norm(closest - np.asarray(p, dtype=np.float64), axis=1)
+        j = int(np.argmin(dists))
+        if dists[j] < best_dist:
+            best_dist = float(dists[j])
+            best_p = np.asarray(p, dtype=np.float64)
+            best_q = closest[j]
+    return best_dist, best_p, best_q
+
+
+def mesh_min_distance_prepared(prep_a, prep_b, threshold_m):
+    """
+    Minimum distance between two prepared meshes (see prepare_distance).
+
+    Vertex-to-vertex KD-tree query first, then refined with exact
+    point-to-triangle distances in both directions — vertex-only
+    distances badly overestimate the gap between large faces whose
+    vertices are far apart (e.g. two big parallel slabs).
 
     Returns (distance_m, midpoint) or None if distance > threshold_m.
     """
-    try:
-        from scipy.spatial import cKDTree
-        tree = cKDTree(verts_b)
-        dists, idxs = tree.query(verts_a, k=1)
-        min_idx = np.argmin(dists)
-        min_dist = float(dists[min_idx])
-        if min_dist > threshold_m:
-            return None
-        pt_a = verts_a[min_idx]
-        pt_b = verts_b[idxs[min_idx]]
-        midpoint = (pt_a + pt_b) / 2.0
-        return min_dist, midpoint
-    except ImportError:
-        # Fallback: spatial hash grid
+    verts_a = prep_a['verts']
+    verts_b = prep_b['verts']
+
+    if prep_a['tree'] is None or prep_b['tree'] is None:
+        # No scipy: spatial-hash vertex-only fallback
         return _spatial_hash_min_dist(verts_a, verts_b, threshold_m)
+
+    dists, idxs = prep_b['tree'].query(verts_a, k=1)
+    min_idx = int(np.argmin(dists))
+    best = (
+        float(dists[min_idx]),
+        np.asarray(verts_a[min_idx], dtype=np.float64),
+        np.asarray(verts_b[idxs[min_idx]], dtype=np.float64),
+    )
+
+    # Only distances <= threshold matter, so the candidate search bound
+    # can shrink to the current best when it is already tighter.
+    bound = min(best[0], threshold_m)
+    best = _refine_point_to_tris(verts_a, prep_b, bound, best)
+    bound = min(best[0], bound)
+    best = _refine_point_to_tris(verts_b, prep_a, bound, best)
+
+    min_dist, pt_a, pt_b = best
+    if min_dist > threshold_m:
+        return None
+    midpoint = (pt_a + pt_b) / 2.0
+    return min_dist, midpoint
+
+
+def mesh_min_distance(verts_a, verts_b, threshold_m, faces_a=None, faces_b=None):
+    """
+    Compute minimum distance between two meshes.
+
+    Vertex-to-vertex via scipy KD-tree (spatial hash fallback), refined
+    with exact point-to-triangle distances when faces are provided.
+
+    Returns (distance_m, midpoint) or None if distance > threshold_m.
+    """
+    return mesh_min_distance_prepared(
+        prepare_distance(verts_a, faces_a),
+        prepare_distance(verts_b, faces_b),
+        threshold_m,
+    )
 
 
 def _spatial_hash_min_dist(verts_a, verts_b, threshold_m):
