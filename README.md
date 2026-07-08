@@ -1,6 +1,6 @@
 # clashcontrol-engine
 
-Local clash detection server for [ClashControl](https://clashcontrol.io) — multi-threaded exact mesh intersection on your machine.
+Local clash detection server for [ClashControl](https://clashcontrol.io) — multi-process exact mesh intersection on your machine, across all CPU cores.
 
 ## Install
 
@@ -11,8 +11,10 @@ Download the file for your OS and open it. That's the whole setup.
 - **Linux** — [clashcontrol-engine-linux.tar.gz](https://github.com/clashcontrol-io/ClashControlEngine/releases/latest/download/clashcontrol-engine-linux.tar.gz). Extract and run:
   ```bash
   tar -xzf clashcontrol-engine-linux.tar.gz
-  ./clashcontrol-engine-linux
+  ./clashcontrol-engine-linux --install
   ```
+  (`--install` is the explicit form of the default no-arguments flow —
+  double-clicking the binary does the same thing.)
 
 No Python, no `pip install`, no `chmod`, no install wizard. The executable bit is preserved through the tarball.
 
@@ -55,11 +57,11 @@ clashcontrol-engine --uninstall    # remove URL handler + stop engine
 
 ## What it does
 
-Runs an HTTP + WebSocket server on `localhost:19800` that ClashControl connects to for clash detection. Uses all CPU cores for parallel exact triangle-triangle intersection testing.
+Runs an HTTP + WebSocket server on `localhost:19800` that ClashControl connects to for clash detection. Uses all CPU cores (worker processes) for parallel exact triangle-triangle intersection testing.
 
 | | Browser engine | Local engine |
 |---|---|---|
-| Threads | 1 | All CPU cores |
+| Parallelism | single thread | all CPU cores (multi-process) |
 | Accuracy | OBB approximation | Exact triangle intersection |
 | Speed (10K elements) | ~60s | ~15-20s |
 | With `[fast]` extra | — | ~1-3s |
