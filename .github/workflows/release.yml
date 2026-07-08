@@ -1,7 +1,26 @@
 name: Build & Release
 
+# Runs on tag push for manually-created tags, via workflow_dispatch for
+# re-runs, and — critically — via workflow_call from auto-release.yml.
+# Auto-release creates its tags with the default GITHUB_TOKEN, and GitHub
+# blocks token-created events from triggering other workflows, so the tag
+# push alone would never start this build (releases shipped with no
+# binaries). auto-release therefore calls this workflow directly in the
+# same run, passing the tag as an input.
+
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to build assets for (e.g. v0.3.0)"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: "Release tag to build assets for"
+        required: true
+        type: string
   push:
     tags:
       - "v*"
@@ -25,6 +44,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # When called from auto-release, build the tagged commit (the
+          # version-bump commit), not the commit that triggered the run.
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -80,10 +103,32 @@ jobs:
         if: runner.os == 'Windows'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: dist/${{ matrix.artifact }}
 
       - name: Upload non-Windows release asset
         if: runner.os != 'Windows'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: dist/${{ matrix.artifact }}.tar.gz
+
+  # Generate SHA256SUMS over every asset attached above and add it to the
+  # release. The self-updater downloads this file and verifies the binary
+  # hash before swapping it in.
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate and upload SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          mkdir assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+          cd assets
+          rm -f SHA256SUMS
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"

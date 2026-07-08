@@ -11,15 +11,17 @@ trigger(host, port) -> dict
     Start a background update if one is available.
     Returns immediately with a status dict:
 
-    {"status": "updating",   "current": "0.2.2", "latest": "0.2.3"}
-    {"status": "up_to_date", "version": "0.2.2"}
+    {"status": "updating",   "current": "0.3.0", "latest": "0.3.1"}
+    {"status": "up_to_date", "version": "0.3.0"}
     {"status": "error",      "error": "<reason>"}
 
 is_newer(candidate, current) -> bool
     Semver comparison helper (re-exported for server.py).
 """
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -41,14 +43,35 @@ _update_lock = threading.Lock()
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
+def _parse_version(v):
+    """Parse '0.2.6', 'v0.2.6' or '0.2.6-rc1' into a numeric tuple.
+
+    Pre-release / build suffixes ('-rc1', '+build5') are stripped before
+    the numeric compare. Raises ValueError for malformed input.
+    """
+    core = re.split(r'[-+]', str(v).strip().lstrip('v'), maxsplit=1)[0]
+    if not core:
+        raise ValueError(f'empty version string: {v!r}')
+    return tuple(int(x) for x in core.split('.'))
+
+
 def is_newer(candidate, current):
-    """Return True if *candidate* version string is strictly newer than *current*."""
-    def _parse(v):
-        try:
-            return tuple(int(x) for x in v.split('.'))
-        except Exception:
-            return (0,)
-    return _parse(candidate) > _parse(current)
+    """Return True if *candidate* version string is strictly newer than *current*.
+
+    A malformed *candidate* (e.g. a mistyped release tag) is logged and
+    treated as not-newer rather than raising — a bad tag on GitHub must
+    never break the update check.
+    """
+    try:
+        cand = _parse_version(candidate)
+    except (ValueError, AttributeError):
+        print(f'[CC Engine] Ignoring malformed version tag: {candidate!r}')
+        return False
+    try:
+        cur = _parse_version(current)
+    except (ValueError, AttributeError):
+        return False
+    return cand > cur
 
 
 def _platform_asset():
@@ -68,26 +91,70 @@ def _fetch_release():
         return json.loads(resp.read())
 
 
-def _download_asset(url, dest: Path):
-    """Download *url* to *dest*, extracting from a tar.gz archive when needed."""
+def _fetch_sha256sums(release):
+    """Download and parse the release's SHA256SUMS asset.
+
+    Returns {filename: hexdigest} or None when the release carries no
+    SHA256SUMS asset (older releases — verification is skipped with a
+    warning for backward compatibility).
+    """
+    asset = next(
+        (a for a in release.get('assets', []) if a['name'] == 'SHA256SUMS'),
+        None,
+    )
+    if asset is None:
+        return None
+    req = Request(
+        asset['browser_download_url'],
+        headers={'User-Agent': f'clashcontrol-engine/{__version__}'},
+    )
+    with urlopen(req, timeout=30) as resp:
+        text = resp.read().decode('utf-8', errors='replace')
+
+    sums = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            digest, name = parts
+            sums[name.lstrip('*')] = digest.lower()
+    return sums
+
+
+def _download_asset(url, dest: Path, expected_sha256=None):
+    """Download *url* to *dest*, extracting from a tar.gz archive when needed.
+
+    When *expected_sha256* is given, the raw downloaded asset bytes are
+    verified against it before anything is written to *dest*; a mismatch
+    raises ValueError.
+    """
     req = Request(url, headers={'User-Agent': f'clashcontrol-engine/{__version__}'})
     with urlopen(req, timeout=120) as resp:
-        asset_name = _platform_asset()
-        if asset_name.endswith('.tar.gz'):
-            tmp = dest.with_suffix('.tmp.tar.gz')
+        raw = resp.read()
+
+    if expected_sha256 is not None:
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != expected_sha256.lower():
+            raise ValueError(
+                f'SHA256 mismatch for downloaded asset: '
+                f'expected {expected_sha256}, got {actual}'
+            )
+
+    asset_name = _platform_asset()
+    if asset_name.endswith('.tar.gz'):
+        tmp = dest.with_suffix('.tmp.tar.gz')
+        try:
+            tmp.write_bytes(raw)
+            with tarfile.open(tmp) as tf:
+                # Archive contains a single file; name = asset without .tar.gz
+                member_name = asset_name[:-7]
+                dest.write_bytes(tf.extractfile(tf.getmember(member_name)).read())
+        finally:
             try:
-                tmp.write_bytes(resp.read())
-                with tarfile.open(tmp) as tf:
-                    # Archive contains a single file; name = asset without .tar.gz
-                    member_name = asset_name[:-7]
-                    dest.write_bytes(tf.extractfile(tf.getmember(member_name)).read())
-            finally:
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
-        else:
-            dest.write_bytes(resp.read())
+                tmp.unlink()
+            except OSError:
+                pass
+    else:
+        dest.write_bytes(raw)
 
     if os.name != 'nt':
         os.chmod(dest, 0o755)
@@ -106,7 +173,16 @@ def _replace_binary(new_binary: Path, install_path: Path):
         except OSError:
             pass
         os.rename(install_path, old)
-        os.rename(new_binary, install_path)
+        try:
+            os.rename(new_binary, install_path)
+        except OSError:
+            # Second rename failed — restore the original binary so the
+            # install path is never left empty.
+            try:
+                os.rename(old, install_path)
+            except OSError:
+                pass
+            raise
     else:
         # Unix: os.replace is atomic even on a running binary (inode swap).
         os.replace(new_binary, install_path)
@@ -136,14 +212,20 @@ def _spawn_updated_daemon(install_path: Path, host: str, port: int):
     )
 
 
-def _run_update(host: str, port: int):
-    """Background worker: download → replace → restart."""
+def _run_update(host: str, port: int, release=None):
+    """Background worker: download → verify → replace → restart.
+
+    *release* is the release info dict already fetched by trigger();
+    re-fetching here would race a release replaced/retagged in between
+    (TOCTOU). It is only fetched again if the caller didn't provide it.
+    """
     with _update_lock:
-        try:
-            release = _fetch_release()
-        except Exception as exc:
-            print(f'[CC Engine] Update check failed: {exc}')
-            return
+        if release is None:
+            try:
+                release = _fetch_release()
+            except Exception as exc:
+                print(f'[CC Engine] Update check failed: {exc}')
+                return
 
         tag = release.get('tag_name', '').lstrip('v')
         if not is_newer(tag, __version__):
@@ -162,9 +244,29 @@ def _run_update(host: str, port: int):
         install_path = _install.install_path()
         new_binary = install_path.with_name(install_path.name + '.new')
 
+        # SHA256 verification: releases ship a SHA256SUMS asset. Absent
+        # (old releases) -> warn and proceed for back-compat; present but
+        # mismatching -> abort.
+        expected_sha256 = None
+        try:
+            sums = _fetch_sha256sums(release)
+        except Exception as exc:
+            print(f'[CC Engine] Could not fetch SHA256SUMS: {exc}')
+            sums = None
+        if sums is None:
+            print('[CC Engine] Release has no SHA256SUMS asset - '
+                  'skipping checksum verification (old release?)')
+        else:
+            expected_sha256 = sums.get(asset_name)
+            if expected_sha256 is None:
+                print(f'[CC Engine] SHA256SUMS has no entry for {asset_name!r} - '
+                      'aborting update')
+                return
+
         print(f'[CC Engine] Downloading {asset_name} ({__version__} -> {tag}) ...')
         try:
-            _download_asset(asset['browser_download_url'], new_binary)
+            _download_asset(asset['browser_download_url'], new_binary,
+                            expected_sha256=expected_sha256)
         except Exception as exc:
             print(f'[CC Engine] Update download failed: {exc}')
             try:
@@ -182,6 +284,15 @@ def _run_update(host: str, port: int):
             except OSError:
                 pass
             return
+
+        # Release our listen sockets before spawning the replacement so
+        # it can bind the ports immediately (its startup also retries
+        # EADDRINUSE for a few seconds as a belt-and-suspenders).
+        try:
+            from . import server as _server
+            _server.release_listen_sockets()
+        except Exception as exc:
+            print(f'[CC Engine] Could not release sockets cleanly: {exc}')
 
         try:
             _spawn_updated_daemon(install_path, host, port)
@@ -223,5 +334,10 @@ def trigger(host: str, port: int) -> dict:
     if not is_newer(tag, __version__):
         return {'status': 'up_to_date', 'version': __version__}
 
-    threading.Thread(target=_run_update, args=(host, port), daemon=True).start()
+    # Pass the already-fetched release through so the worker doesn't
+    # re-fetch (and possibly act on a different release than the one we
+    # just validated).
+    threading.Thread(
+        target=_run_update, args=(host, port, release), daemon=True,
+    ).start()
     return {'status': 'updating', 'current': __version__, 'latest': tag}

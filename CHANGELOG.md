@@ -1,5 +1,110 @@
 # Changelog
 
+## Unreleased (0.3.0)
+
+Behaviour changes (depth semantics + CORS restriction) justify the minor
+bump. The browser addon reads the engine version from `/status` and is
+version-agnostic.
+
+### Correctness
+- **All-vs-all runs no longer self-clash or double-count.** When both
+  rule sides select the same element set, the broad phase now generates
+  each unordered pair exactly once and never emits `(i, i)` self-pairs.
+  Previously every element was narrow-phased against itself (shared-edge
+  triangles registered as false "self clashes") and every real pair was
+  tested twice.
+- **Coplanar pairs: explicit touch-not-clash policy + NaN guard.**
+  `tri_tri_intersect` now returns early (no hit) for (near-)coplanar
+  triangle pairs, with the policy documented in code: flush surface
+  contact (a wall's bottom face lying in a slab's top-face plane) is
+  touching, not interpenetration — reporting it would flood every model
+  with false positives at ordinary support contacts. Volumetric overlaps
+  are still caught via their non-coplanar face pairs. The early-out also
+  removes the 0/0 interval-division path for near-coplanar input.
+- **Honest penetration depth.** Hard clashes now report the overlap of
+  the two elements' AABBs along the minimum-overlap axis — a cheap,
+  documented *upper bound* on true penetration
+  (`depth_semantics: "aabb_overlap_estimate"`, `distance` stays negative
+  mm for API compat). The old value was the length of one intersection-
+  line segment, which measures the size of the crossing region, not
+  penetration. The bogus `volume` field (previously `depth * 0.001`,
+  not a volume) is now `null` for hard clashes.
+- **Exact point-to-triangle clearance.** Soft-clash distance adds a
+  vectorized Ericson closest-point-on-triangle refinement in both
+  directions on top of the vertex-vertex KD-tree query. Vertex-only
+  distance badly overestimated the gap between large faces whose
+  vertices are far apart (two big parallel slabs reported metres of
+  clearance across a 100 mm gap).
+
+### Performance
+- Real sorted-endpoint sweep-and-prune (start pointer + sweep-axis
+  break) instead of rescanning the full candidate list per element.
+- Per-element BVH and clearance-KD-tree caches, built once per detection
+  run and reused across candidate pairs.
+- The process pool now ships geometry to each worker once (pool
+  initializer); tasks are `(index_a, index_b)` tuples instead of
+  pickling both meshes for every pair.
+- Single BVH traversal collecting up to 24 intersection points, dropping
+  the redundant 3-point probe pass.
+
+### Server
+- `ThreadingHTTPServer`: `/status` keeps answering during a long
+  `/detect`.
+- Malformed `Content-Length` → 400; bodies over 64 MB → 413.
+- CORS allow-list: only `https://clashcontrol.io`,
+  `https://www.clashcontrol.io` and localhost origins get CORS headers.
+- `Access-Control-Allow-Private-Network: true` on preflight (Chrome PNA).
+- Failed GitHub update lookups are no longer cached for an hour.
+- WebSocket `phase` messages (`Building BVH` / `Narrow phase` /
+  `Finalising`) so the addon can show engine phases live.
+
+### Updater / daemon
+- `is_newer` handles pre-release tags (`0.2.6-rc1`) and treats malformed
+  tags as not-newer instead of raising.
+- Binaries are verified against the release's `SHA256SUMS` asset before
+  the swap (releases without one log a warning and proceed).
+- Windows binary swap restores the `.old` binary if the second rename
+  fails; the updater releases the listen sockets before spawning the
+  replacement daemon, and startup retries `EADDRINUSE` for ~5 s.
+- The update worker reuses the release info fetched at trigger time
+  instead of re-fetching (TOCTOU).
+
+### Release pipeline
+- **Auto releases now actually get binaries.** The tag created by
+  `auto-release.yml` uses the default `GITHUB_TOKEN`, which GitHub
+  prevents from triggering `release.yml`'s tag-push build — so every
+  auto release shipped without assets. `auto-release.yml` now calls
+  `release.yml` as a reusable workflow in the same run, and a new
+  `checksums` job publishes `SHA256SUMS` alongside the binaries.
+
+## 0.2.6 — 2026-06-10
+
+- Contract fixes from a cross-repo audit with the ClashControl addon:
+  - `/detect` clash objects carry `modelAId`/`modelBId` so the addon
+    resolves elements per-model (O(1)) instead of scanning all models.
+  - `GET /update` adds `update_version`/`update_url` aliases alongside
+    `latest`/`release_url` — the addon's update banner reads those names.
+
+## 0.2.5 — 2026-04-30
+
+- CI: `workflow_dispatch` trigger on the build workflow for manual
+  re-runs of a release build.
+
+## 0.2.4 — 2026-04-30
+
+- CI: build workflow triggers on tag push instead of `release published`
+  (an attempt to make auto releases build binaries; superseded by the
+  workflow_call approach in 0.3.0).
+
+## 0.2.3 — 2026-04-10
+
+- **Self-update.** `GET /update` reports the latest GitHub release
+  (cached 1 h); `POST /update` downloads the new binary, hot-swaps the
+  installed executable and restarts the daemon (frozen installs only —
+  pip installs get a manual-upgrade message).
+- Auto-release workflow: every push to `main` bumps the patch version
+  and cuts a GitHub release.
+
 ## 0.2.2 — 2026-04-09
 
 - **No more cmd window on Windows.** The Windows PyInstaller build now

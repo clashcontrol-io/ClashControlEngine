@@ -2,7 +2,7 @@ ClashControlEngine repository
 
 ## Overview
 
-Local clash detection server for [ClashControl](https://clashcontrol.io). Multi-threaded exact mesh intersection using Möller triangle-triangle tests with dual-BVH traversal and sweep-and-prune broad phase.
+Local clash detection server for [ClashControl](https://clashcontrol.io). Multi-process exact mesh intersection using Möller triangle-triangle tests with dual-BVH traversal and sweep-and-prune broad phase.
 
 ## Architecture
 
