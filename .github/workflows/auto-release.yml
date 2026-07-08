@@ -7,6 +7,12 @@ on:
 # Skip the version-bump commit this workflow pushes back, avoiding an
 # infinite loop.  GitHub also honours [skip ci] in the commit message,
 # but the explicit actor check is a belt-and-suspenders guard.
+#
+# NOTE: the tag/release below is created with the default GITHUB_TOKEN.
+# GitHub blocks token-created events from triggering other workflows, so
+# release.yml's `on: push: tags:` will NOT fire for it — which is why the
+# `build` job at the bottom calls release.yml directly in this same run.
+# Without that call, every auto release ships with no binary assets.
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -14,6 +20,9 @@ jobs:
 
     permissions:
       contents: write
+
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
 
     steps:
       - uses: actions/checkout@v4
@@ -75,3 +84,15 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
+
+  # Build the binaries in the SAME run and attach them (plus SHA256SUMS)
+  # to the release just created. The tag was made with GITHUB_TOKEN, so
+  # release.yml's tag-push trigger never fires for it — calling it as a
+  # reusable workflow here is what actually populates the release assets.
+  build:
+    needs: release
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+    with:
+      release_tag: ${{ needs.release.outputs.tag }}
