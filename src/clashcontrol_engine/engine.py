@@ -44,6 +44,44 @@ def _detect_backends():
 
 BACKENDS = _detect_backends()
 
+# ── Capability / protocol negotiation (ClashControl V7 P1.1) ────────────────
+# The browser client (addons/local-engine.js) has to decide, per run, whether
+# this engine can honor the active ruleset or whether it must fall back to the
+# in-browser engine to avoid silently returning a different result set. Until
+# now that decision was a hand-maintained snapshot in the browser, kept in sync
+# by hand whenever this repo's rule-handling changed. `/status` now advertises
+# the wire-contract version and exactly which rule fields are applied
+# engine-side, so the client can negotiate instead of guessing.
+#
+# Bump PROTOCOL_VERSION on any change to the request/response wire contract.
+# Update CAPABILITIES['rules'] whenever a field starts (or stops) being honored
+# — a field marked False means the engine ignores it, so the client must apply
+# it after the fact or fall back. `modelScope: 'exact'` means modelA/modelB are
+# matched by an exact model id (or the literal 'all') only — the engine does NOT
+# understand the browser's array / `disc:` / `tag:` / name / substring selectors.
+PROTOCOL_VERSION = 1
+CAPABILITIES = {
+    'protocolVersion': PROTOCOL_VERSION,
+    'modelScope': 'exact',            # 'all' | single model id only
+    'overlapVolume': False,           # no real intersection-volume computation yet
+    'rules': {
+        'mode': True,
+        'maxGap': True,
+        'minGap': True,
+        'excludeSelf': True,          # applied in the broad phase (sweep.py)
+        'excludeTypePairs': True,     # applied in the broad phase (sweep.py)
+        'excludeTypes': False,        # not applied engine-side
+        'includeSpaces': False,       # caller must pre-filter IfcSpace
+        'toleranceByTypePair': False,
+        'minOverlapVolM3': False,
+        'duplicates': False,
+        'useSemanticFilter': False,   # needs relatedPairs, not in the payload
+        'excludeSameDiscipline': False,
+        'disciplineMatrix': False,
+        'changeAware': False,
+    },
+}
+
 # Reported penetration-depth semantics for hard clashes: the overlap of
 # the two elements' AABBs along the minimum-overlap axis — a cheap,
 # honest upper bound on true penetration (see meshes_intersect_prepared).

@@ -84,6 +84,27 @@ def test_status_shape(server_port):
     assert isinstance(data['backends'], list) and 'numpy' in data['backends']
 
 
+def test_status_advertises_protocol_and_capabilities(server_port):
+    """V7 P1.1: /status publishes a protocol version + a rule-capability map so
+    the ClashControl client can negotiate instead of hand-maintaining a snapshot."""
+    _, _, data = _get(server_port, '/status', origin=APP_ORIGIN)
+    assert isinstance(data['protocolVersion'], int) and data['protocolVersion'] >= 1
+    caps = data['capabilities']
+    assert caps['protocolVersion'] == data['protocolVersion']
+    # Exact-id/all scope only — the client must resolve rich selectors itself.
+    assert caps['modelScope'] == 'exact'
+    rules = caps['rules']
+    # Honored engine-side (broad phase + narrow phase).
+    for honored in ('mode', 'maxGap', 'minGap', 'excludeSelf', 'excludeTypePairs'):
+        assert rules[honored] is True, honored
+    # Not honored — the client must apply these after the fact or fall back.
+    for unsupported in ('excludeTypes', 'includeSpaces', 'toleranceByTypePair',
+                        'minOverlapVolM3', 'duplicates', 'useSemanticFilter',
+                        'excludeSameDiscipline', 'disciplineMatrix', 'changeAware'):
+        assert rules[unsupported] is False, unsupported
+    assert caps['overlapVolume'] is False
+
+
 # ── /detect happy path ────────────────────────────────────────────
 
 def test_detect_happy_path(server_port):

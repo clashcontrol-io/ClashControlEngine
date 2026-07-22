@@ -20,7 +20,7 @@ from urllib.error import URLError
 
 from . import __version__, daemon as _daemon
 from . import updater as _updater
-from .engine import detect_clashes, BACKENDS
+from .engine import detect_clashes, BACKENDS, CAPABILITIES, PROTOCOL_VERSION
 
 PORT = int(os.environ.get('CC_ENGINE_PORT', 19800))
 HOST = os.environ.get('CC_ENGINE_HOST', 'localhost')
@@ -128,6 +128,11 @@ class Handler(BaseHTTPRequestHandler):
                 'version': __version__,
                 'cores': multiprocessing.cpu_count(),
                 'backends': BACKENDS,
+                # Wire-contract version + which rule fields are honored engine-side,
+                # so the ClashControl client can negotiate instead of hand-maintaining
+                # a snapshot (V7 P1.1). Older clients ignore these extra keys.
+                'protocolVersion': PROTOCOL_VERSION,
+                'capabilities': CAPABILITIES,
             })
         elif self.path == '/update':
             self._json_response(200, _fetch_update_info())
