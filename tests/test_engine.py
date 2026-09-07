@@ -10,6 +10,25 @@ from clashcontrol_engine.intersection import (
 )
 from clashcontrol_engine.sweep import sweep_and_prune
 from clashcontrol_engine.engine import detect_clashes
+import clashcontrol_engine.engine as _engine_mod
+
+# Captured at import time (before any test monkeypatches _check_pair), so
+# the module-level fault-injection helpers below can still reach the real
+# implementation. Module-level (not a test-function-local closure) because
+# ProcessPoolExecutor must pickle-by-reference whatever _check_pair is
+# monkeypatched to for the parallel (>4 candidate pairs) path -- a local
+# closure raises "Can't pickle local object" the moment it's submitted.
+_REAL_CHECK_PAIR = _engine_mod._check_pair
+
+
+def _boom_check_pair(pair):
+    raise ValueError('synthetic narrow-phase failure')
+
+
+def _flaky_check_pair(pair):
+    if pair == (0, 1):
+        raise RuntimeError('synthetic single-pair failure')
+    return _REAL_CHECK_PAIR(pair)
 
 
 # ── Triangle-triangle intersection ────────────────────────────────
@@ -425,3 +444,107 @@ def test_detect_clashes_empty():
     result = detect_clashes({'elements': [], 'rules': {}})
     assert result['clashes'] == []
     assert result['stats']['elementCount'] == 0
+    # A vacuous run (no candidates at all) is trivially complete.
+    assert result['stats']['failed'] == 0
+    assert result['stats']['incomplete'] is False
+
+
+def test_detect_clashes_success_reports_complete():
+    """A normal, fully-successful run must report incomplete=False, not
+    just omit the field -- callers need a positive signal, not an absence."""
+    verts_a, faces_a = _make_box([0, 0, 0], 1.0)
+    verts_b, faces_b = _make_box([0.5, 0, 0], 1.0)
+    payload = {
+        'elements': [
+            {'id': 1, 'modelId': 'm', 'ifcType': 'IfcWall', 'name': 'a',
+             'storey': '', 'discipline': 'other',
+             'vertices': verts_a.flatten().tolist(), 'indices': faces_a.flatten().tolist()},
+            {'id': 2, 'modelId': 'm', 'ifcType': 'IfcDuct', 'name': 'b',
+             'storey': '', 'discipline': 'other',
+             'vertices': verts_b.flatten().tolist(), 'indices': faces_b.flatten().tolist()},
+        ],
+        'rules': {'mode': 'hard'},
+    }
+    result = detect_clashes(payload)
+    stats = result['stats']
+    assert stats['candidatePairs'] == 1
+    assert stats['completed'] == 1
+    assert stats['failed'] == 0
+    assert stats['incomplete'] is False
+    assert 'sampleError' not in stats
+
+
+def _overlapping_cluster_payload(n):
+    """n boxes all centered at the origin -- every pair's AABB overlaps, so
+    sweep_and_prune emits all C(n,2) candidate pairs regardless of n."""
+    elements = []
+    for i in range(n):
+        verts, faces = _make_box([0, 0, 0], 1.0)
+        elements.append({
+            'id': i, 'modelId': 'm', 'ifcType': 'IfcWall', 'name': 'e%d' % i,
+            'storey': '', 'discipline': 'other',
+            'vertices': verts.flatten().tolist(), 'indices': faces.flatten().tolist(),
+        })
+    return {'elements': elements, 'rules': {'modelA': 'all', 'modelB': 'all', 'mode': 'hard'}}
+
+
+def test_detect_clashes_serial_path_reports_worker_failures(monkeypatch):
+    """<=4 candidate pairs -> the serial (in-process) branch. Previously this
+    branch didn't catch exceptions at all -- a single bad pair would raise
+    out of detect_clashes entirely rather than being counted and skipped."""
+    import clashcontrol_engine.engine as engine_mod
+
+    payload = _overlapping_cluster_payload(3)  # C(3,2) = 3 pairs <= 4 -> serial
+
+    monkeypatch.setattr(engine_mod, '_check_pair', _boom_check_pair)
+    result = detect_clashes(payload)
+
+    assert result['clashes'] == [], 'a failed pair must never surface as a fabricated clash'
+    stats = result['stats']
+    assert stats['candidatePairs'] == 3
+    assert stats['failed'] == 3
+    assert stats['completed'] == 0
+    assert stats['incomplete'] is True
+    assert 'synthetic narrow-phase failure' in stats['sampleError']
+
+
+def test_detect_clashes_parallel_path_reports_worker_failures(monkeypatch):
+    """>4 candidate pairs -> the ProcessPoolExecutor branch. This is the
+    branch the review found silently swallowing failures
+    (`except Exception: pass`)."""
+    import clashcontrol_engine.engine as engine_mod
+
+    payload = _overlapping_cluster_payload(6)  # C(6,2) = 15 pairs > 4 -> parallel
+
+    monkeypatch.setattr(engine_mod, '_check_pair', _boom_check_pair)
+    result = detect_clashes(payload)
+
+    assert result['clashes'] == [], 'a failed pair must never surface as a fabricated clash'
+    stats = result['stats']
+    assert stats['candidatePairs'] == 15
+    assert stats['failed'] == 15
+    assert stats['completed'] == 0
+    assert stats['incomplete'] is True
+    assert 'synthetic narrow-phase failure' in stats['sampleError']
+
+
+def test_detect_clashes_partial_failure_is_still_incomplete(monkeypatch):
+    """Even ONE failed pair among many successes must flip incomplete=True
+    -- a partially-failed run is not a trustworthy clean result. Fails a
+    specific pair by CONTENT (not a shared call counter) because the
+    parallel path distributes tasks across separate worker processes, each
+    with its own copy of any closure state -- a counter would fail once per
+    worker, not once overall."""
+    import clashcontrol_engine.engine as engine_mod
+
+    payload = _overlapping_cluster_payload(6)  # 15 pairs, parallel path
+
+    monkeypatch.setattr(engine_mod, '_check_pair', _flaky_check_pair)
+    result = detect_clashes(payload)
+
+    stats = result['stats']
+    assert stats['candidatePairs'] == 15
+    assert stats['failed'] == 1
+    assert stats['completed'] == 14
+    assert stats['incomplete'] is True
+    assert 'synthetic single-pair failure' in stats['sampleError']
