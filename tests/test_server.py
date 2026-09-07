@@ -95,14 +95,44 @@ def test_status_advertises_protocol_and_capabilities(server_port):
     assert caps['modelScope'] == 'exact'
     rules = caps['rules']
     # Honored engine-side (broad phase + narrow phase).
-    for honored in ('mode', 'maxGap', 'minGap', 'excludeSelf', 'excludeTypePairs'):
+    for honored in ('mode', 'maxGap', 'excludeSelf', 'excludeTypePairs'):
         assert rules[honored] is True, honored
     # Not honored — the client must apply these after the fact or fall back.
-    for unsupported in ('excludeTypes', 'includeSpaces', 'toleranceByTypePair',
+    # minGap (CLAUDE.md Item 4) belongs here, not above: it is never read
+    # anywhere in this engine (sweep.py/intersection.py/engine.py) even
+    # though it used to be advertised as True. The browser applies it
+    # client-side after the fact — see addons/local-engine.js.
+    for unsupported in ('minGap', 'excludeTypes', 'includeSpaces', 'toleranceByTypePair',
                         'minOverlapVolM3', 'duplicates', 'useSemanticFilter',
                         'excludeSameDiscipline', 'disciplineMatrix', 'changeAware'):
         assert rules[unsupported] is False, unsupported
     assert caps['overlapVolume'] is False
+
+
+def test_minGap_capability_is_honest_not_actually_implemented(server_port):
+    """Pin the advertised minGap capability against reality: grep the whole
+    engine package for any real use of a 'minGap' rule field. If this ever
+    starts failing because someone genuinely implemented minGap, flip the
+    capability back to True in the same change -- don't just delete this
+    test."""
+    import pathlib
+    engine_pkg = pathlib.Path(__file__).parent.parent / 'src' / 'clashcontrol_engine'
+    hits = []
+    for py_file in engine_pkg.glob('*.py'):
+        text = py_file.read_text()
+        # The CAPABILITIES literal itself is the one allowed mention.
+        for line in text.splitlines():
+            stripped = line.strip()
+            if 'minGap' in stripped and "'minGap':" not in stripped and not stripped.startswith('#'):
+                hits.append(f'{py_file.name}: {stripped}')
+    assert hits == [], (
+        "minGap is referenced outside the CAPABILITIES literal -- if it's "
+        "genuinely implemented now, flip CAPABILITIES['rules']['minGap'] "
+        f"back to True. Found: {hits}"
+    )
+
+    _, _, data = _get(server_port, '/status', origin=APP_ORIGIN)
+    assert data['capabilities']['rules']['minGap'] is False
 
 
 # ── /detect happy path ────────────────────────────────────────────

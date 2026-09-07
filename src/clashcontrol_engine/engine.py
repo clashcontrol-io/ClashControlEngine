@@ -67,7 +67,15 @@ CAPABILITIES = {
     'rules': {
         'mode': True,
         'maxGap': True,
-        'minGap': True,
+        # CLAUDE.md Item 4: minGap is NOT read anywhere in this engine (not
+        # in engine.py, sweep.py, or intersection.py) -- this was a false
+        # advertised capability. The browser (addons/local-engine.js) has
+        # always post-filtered minGap client-side after the fact, so there
+        # is no live bug today, but a caller trusting this map at face value
+        # would wrongly assume the engine itself enforces a minimum gap.
+        # Do not flip this back to True without actually implementing
+        # minGap engine-side (out of scope for this wave).
+        'minGap': False,
         'excludeSelf': True,          # applied in the broad phase (sweep.py)
         'excludeTypePairs': True,     # applied in the broad phase (sweep.py)
         'excludeTypes': False,        # not applied engine-side
