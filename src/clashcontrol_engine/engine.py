@@ -76,7 +76,26 @@ CAPABILITIES = {
         # Do not flip this back to True without actually implementing
         # minGap engine-side (out of scope for this wave).
         'minGap': False,
-        'excludeSelf': True,          # applied in the broad phase (sweep.py)
+        # CORRECTED (post-review, same class of bug as minGap above):
+        # excludeSelf was advertised True and commented "applied in the
+        # broad phase (sweep.py)", but verified false by actually running
+        # sweep_and_prune. For the shipped default scope (modelA/modelB both
+        # 'all'), the caller passes elements_a = elements_b = all_elements
+        # (the SAME list), so sweep.py's _same_id_sets short-circuits true
+        # and the same_set branch runs -- which only dedupes unordered pairs
+        # and drops an element against itself (i, i). It has no same-MODEL
+        # concept and never inspects rules['excludeSelf'] in that branch.
+        # Reproduced: excludeSelf=True and excludeSelf=False returned
+        # byte-identical candidate sets, same-model pairs included both
+        # times. The `elif exclude_self and ...` branch a few lines down in
+        # sweep.py only ever fires for a genuinely disjoint elements_a/
+        # elements_b that still happen to share one literal element -- an
+        # edge case, not "drops same-model pairs". The browser adapter
+        # (addons/local-engine.js) enforces cross-model-only entirely
+        # client-side (`_applyClientSideRuleFilters`'s `cl.selfClash` check)
+        # because of this. Do not flip this back to True without engine.py
+        # actually filtering same-model pairs when excludeSelf is set.
+        'excludeSelf': False,
         'excludeTypePairs': True,     # applied in the broad phase (sweep.py)
         'excludeTypes': False,        # not applied engine-side
         'includeSpaces': False,       # caller must pre-filter IfcSpace
