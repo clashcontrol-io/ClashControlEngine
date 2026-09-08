@@ -67,8 +67,35 @@ CAPABILITIES = {
     'rules': {
         'mode': True,
         'maxGap': True,
-        'minGap': True,
-        'excludeSelf': True,          # applied in the broad phase (sweep.py)
+        # CLAUDE.md Item 4: minGap is NOT read anywhere in this engine (not
+        # in engine.py, sweep.py, or intersection.py) -- this was a false
+        # advertised capability. The browser (addons/local-engine.js) has
+        # always post-filtered minGap client-side after the fact, so there
+        # is no live bug today, but a caller trusting this map at face value
+        # would wrongly assume the engine itself enforces a minimum gap.
+        # Do not flip this back to True without actually implementing
+        # minGap engine-side (out of scope for this wave).
+        'minGap': False,
+        # CORRECTED (post-review, same class of bug as minGap above):
+        # excludeSelf was advertised True and commented "applied in the
+        # broad phase (sweep.py)", but verified false by actually running
+        # sweep_and_prune. For the shipped default scope (modelA/modelB both
+        # 'all'), the caller passes elements_a = elements_b = all_elements
+        # (the SAME list), so sweep.py's _same_id_sets short-circuits true
+        # and the same_set branch runs -- which only dedupes unordered pairs
+        # and drops an element against itself (i, i). It has no same-MODEL
+        # concept and never inspects rules['excludeSelf'] in that branch.
+        # Reproduced: excludeSelf=True and excludeSelf=False returned
+        # byte-identical candidate sets, same-model pairs included both
+        # times. The `elif exclude_self and ...` branch a few lines down in
+        # sweep.py only ever fires for a genuinely disjoint elements_a/
+        # elements_b that still happen to share one literal element -- an
+        # edge case, not "drops same-model pairs". The browser adapter
+        # (addons/local-engine.js) enforces cross-model-only entirely
+        # client-side (`_applyClientSideRuleFilters`'s `cl.selfClash` check)
+        # because of this. Do not flip this back to True without engine.py
+        # actually filtering same-model pairs when excludeSelf is set.
+        'excludeSelf': False,
         'excludeTypePairs': True,     # applied in the broad phase (sweep.py)
         'excludeTypes': False,        # not applied engine-side
         'includeSpaces': False,       # caller must pre-filter IfcSpace
@@ -303,18 +330,31 @@ def detect_clashes(payload, on_progress=None, on_phase=None):
     _phase('Building BVH')
     clashes = []
     done_count = 0
+    failed_count = 0
+    sample_error = None
     total = len(tasks)
 
     if total <= 4:
         # Too few tasks for multiprocessing overhead — run serially,
-        # using the same per-element caches in-process.
+        # using the same per-element caches in-process. A failing pair here
+        # must behave exactly like a failing pair in the parallel branch
+        # below (counted, not silently dropping the whole run) — the two
+        # paths previously disagreed: this one didn't catch at all, so one
+        # bad pair (a degenerate mesh, say) would raise out of detect_clashes
+        # entirely instead of just being skipped.
         _pool_init(geoms, max_gap_m, check_hard)
         _phase('Narrow phase')
         for task in tasks:
             done_count += 1
-            result = _check_pair(task)
-            if result is not None:
-                clashes.append(result)
+            try:
+                result = _check_pair(task)
+            except Exception as exc:
+                failed_count += 1
+                if sample_error is None:
+                    sample_error = '%s: %s' % (type(exc).__name__, exc)
+            else:
+                if result is not None:
+                    clashes.append(result)
             if on_progress:
                 on_progress(done_count, total)
     else:
@@ -331,10 +371,17 @@ def detect_clashes(payload, on_progress=None, on_phase=None):
                     on_progress(done_count, total)
                 try:
                     result = future.result()
+                except Exception as exc:
+                    # Skip failed pairs (degenerate meshes, etc.) but COUNT
+                    # them — a run with failures is incomplete, not a clean
+                    # zero-clash success, and the caller must be able to
+                    # tell the difference (see _stats below).
+                    failed_count += 1
+                    if sample_error is None:
+                        sample_error = '%s: %s' % (type(exc).__name__, exc)
+                else:
                     if result is not None:
                         clashes.append(result)
-                except Exception:
-                    pass  # Skip failed pairs (degenerate meshes, etc.)
 
     # 6. Add IDs
     _phase('Finalising')
@@ -343,12 +390,14 @@ def detect_clashes(payload, on_progress=None, on_phase=None):
 
     return {
         'clashes': clashes,
-        'stats': _stats(len(all_elements), len(candidates), len(clashes), t0, num_workers),
+        'stats': _stats(len(all_elements), len(candidates), len(clashes), t0, num_workers,
+                         completed=total - failed_count, failed=failed_count, sample_error=sample_error),
     }
 
 
-def _stats(element_count, candidate_pairs, clash_count, t0, workers):
-    return {
+def _stats(element_count, candidate_pairs, clash_count, t0, workers,
+           completed=None, failed=0, sample_error=None):
+    stats = {
         'elementCount': element_count,
         'candidatePairs': candidate_pairs,
         'clashCount': clash_count,
@@ -358,4 +407,16 @@ def _stats(element_count, candidate_pairs, clash_count, t0, workers):
         'threads': workers,
         'backends': BACKENDS,
         'depth_semantics': DEPTH_SEMANTICS,
+        # Worker-failure accounting (CLAUDE.md Item 3): a candidate pair
+        # whose narrow-phase check raised (serial or parallel — both paths
+        # now behave identically) is counted here instead of silently
+        # vanishing into a clean-looking zero-clash result. `completed`
+        # defaults to `candidate_pairs` for the two early-return paths above
+        # (no candidates at all is vacuously a complete, zero-failure run).
+        'completed': candidate_pairs if completed is None else completed,
+        'failed': failed,
+        'incomplete': bool(failed),
     }
+    if sample_error:
+        stats['sampleError'] = sample_error
+    return stats

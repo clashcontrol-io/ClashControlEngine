@@ -95,14 +95,85 @@ def test_status_advertises_protocol_and_capabilities(server_port):
     assert caps['modelScope'] == 'exact'
     rules = caps['rules']
     # Honored engine-side (broad phase + narrow phase).
-    for honored in ('mode', 'maxGap', 'minGap', 'excludeSelf', 'excludeTypePairs'):
+    for honored in ('mode', 'maxGap', 'excludeTypePairs'):
         assert rules[honored] is True, honored
     # Not honored — the client must apply these after the fact or fall back.
-    for unsupported in ('excludeTypes', 'includeSpaces', 'toleranceByTypePair',
+    # minGap and excludeSelf (CLAUDE.md Items 4 and 5-followup) belong here,
+    # not above: minGap is never read anywhere in this engine
+    # (sweep.py/intersection.py/engine.py); excludeSelf IS read
+    # (sweep.py's `rules.get('excludeSelf', False)`) but only ever affects a
+    # narrow edge case (a disjoint elements_a/elements_b that happens to
+    # share one literal element) -- for the shipped default scope
+    # (modelA/modelB both 'all'), elements_a is elements_b, sweep.py's
+    # same_set branch runs instead, and it has no same-MODEL concept at
+    # all. See test_excludeSelf_capability_is_honest below for the
+    # reproduction. The browser adapter applies excludeSelf client-side
+    # after the fact — see addons/local-engine.js.
+    for unsupported in ('minGap', 'excludeSelf', 'excludeTypes', 'includeSpaces', 'toleranceByTypePair',
                         'minOverlapVolM3', 'duplicates', 'useSemanticFilter',
                         'excludeSameDiscipline', 'disciplineMatrix', 'changeAware'):
         assert rules[unsupported] is False, unsupported
     assert caps['overlapVolume'] is False
+
+
+def test_excludeSelf_capability_is_honest_not_actually_implemented(server_port):
+    """Pin the advertised excludeSelf capability against reality: for the
+    shipped default scope (modelA/modelB both 'all', so the caller passes
+    the SAME elements list on both sides), excludeSelf=True and
+    excludeSelf=False must produce byte-identical candidate sets that still
+    include same-model pairs -- proving the engine's broad phase has no
+    same-model exclusion for this scope, regardless of what excludeSelf
+    says. If this ever starts failing because sweep_and_prune genuinely
+    started dropping same-model pairs, flip the capability back to True in
+    the same change -- don't just delete this test."""
+    from clashcontrol_engine.sweep import sweep_and_prune
+
+    elements = [
+        {'id': 'A1', 'model_id': 'A', 'bbox_min': [0, 0, 0], 'bbox_max': [2, 2, 2], 'ifcType': 'IfcWall'},
+        {'id': 'A2', 'model_id': 'A', 'bbox_min': [1, 1, 1], 'bbox_max': [3, 3, 3], 'ifcType': 'IfcWall'},
+        {'id': 'B10', 'model_id': 'B', 'bbox_min': [10, 10, 10], 'bbox_max': [12, 12, 12], 'ifcType': 'IfcDuct'},
+        {'id': 'B11', 'model_id': 'B', 'bbox_min': [11, 11, 11], 'bbox_max': [13, 13, 13], 'ifcType': 'IfcDuct'},
+    ]
+
+    cands_true = sweep_and_prune(elements, elements, 0.0, {'excludeSelf': True})
+    cands_false = sweep_and_prune(elements, elements, 0.0, {'excludeSelf': False})
+    assert cands_true == cands_false, 'excludeSelf must not change the candidate set for the default (same-list) scope'
+
+    same_model_pairs = [
+        (elements[i]['id'], elements[j]['id'])
+        for i, j in cands_true
+        if elements[i]['model_id'] == elements[j]['model_id']
+    ]
+    assert same_model_pairs, 'same-model pairs must still be present -- excludeSelf does not filter them here'
+
+    _, _, data = _get(server_port, '/status', origin=APP_ORIGIN)
+    assert data['capabilities']['rules']['excludeSelf'] is False
+
+
+def test_minGap_capability_is_honest_not_actually_implemented(server_port):
+    """Pin the advertised minGap capability against reality: grep the whole
+    engine package for any real use of a 'minGap' rule field. If this ever
+    starts failing because someone genuinely implemented minGap, flip the
+    capability back to True in the same change -- don't just delete this
+    test."""
+    import pathlib
+    engine_pkg = pathlib.Path(__file__).parent.parent / 'src' / 'clashcontrol_engine'
+    hits = []
+    for py_file in engine_pkg.glob('*.py'):
+        text = py_file.read_text()
+        # The CAPABILITIES literal itself is the one allowed mention.
+        for line in text.splitlines():
+            stripped = line.strip()
+            if 'minGap' in stripped and "'minGap':" not in stripped and not stripped.startswith('#'):
+                hits.append(f'{py_file.name}: {stripped}')
+    assert hits == [], (
+        "minGap is referenced outside the CAPABILITIES literal -- if it's "
+        "genuinely implemented now, flip CAPABILITIES['rules']['minGap'] "
+        f"back to True. Found: {hits}"
+    )
+
+    _, _, data = _get(server_port, '/status', origin=APP_ORIGIN)
+    assert data['capabilities']['rules']['minGap'] is False
 
 
 # ── /detect happy path ────────────────────────────────────────────
