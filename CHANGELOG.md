@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+Parity with the browser engine's distance and depth measurement (same
+algorithm as ClashControl's `_meshMinDist` / `_estimatePenetrationDepthM`).
+
+### Correctness
+- **Clearance: edge-edge term.** Minimum distance now also checks the 9
+  edge-edge segment distances of nearby triangle pairs. Point-to-triangle
+  alone misses two skew edges whose closest points are both mid-edge:
+  two bars crossing 100 mm apart were reported as ~950 mm clearance.
+- **Clearance is 0 for intersecting meshes.** In soft-only runs a duct
+  crossing a column used to get a positive "gap"; it now measures 0 (the
+  same Möller tri-tri test the hard check uses).
+- **Clearance is 0 for contained meshes.** A closed mesh fully inside
+  another with no surface crossing (pipe inside a column) measures 0,
+  via a 3-ray parity inside test (near-axis tilted rays, majority vote).
+- **Penetration depth: vertex-inside estimate.** Hard clashes now report
+  the max, over sampled vertices lying inside the other mesh, of the
+  distance to that mesh's surface (`depth_semantics:
+  "vertex_penetration_estimate"`). When no sampled vertex is inside (a
+  graze or an open mesh) the clash falls back to the previous AABB
+  overlap estimate and says so per clash (`"aabb_overlap_estimate"`).
+  `stats.depth_semantics` names the primary method.
+
 ## Unreleased (0.3.0)
 
 Behaviour changes (depth semantics + CORS restriction) justify the minor

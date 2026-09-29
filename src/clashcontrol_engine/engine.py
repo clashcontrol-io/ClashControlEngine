@@ -22,7 +22,8 @@ from .intersection import (
     prepare_mesh,
     prepare_distance,
     meshes_intersect_prepared,
-    mesh_min_distance_prepared,
+    mesh_min_distance_exact,
+    estimate_penetration_depth,
 )
 
 
@@ -109,10 +110,15 @@ CAPABILITIES = {
     },
 }
 
-# Reported penetration-depth semantics for hard clashes: the overlap of
-# the two elements' AABBs along the minimum-overlap axis — a cheap,
-# honest upper bound on true penetration (see meshes_intersect_prepared).
-DEPTH_SEMANTICS = 'aabb_overlap_estimate'
+# Reported penetration-depth semantics for hard clashes — same algorithm
+# as the browser engine (_estimatePenetrationDepthM): max over both meshes
+# of (sampled vertex inside the other mesh -> its distance to that mesh's
+# surface). When no sampled vertex is inside (a graze, or an open mesh) the
+# clash falls back to the overlap of the two AABBs along the minimum-
+# overlap axis — a cheap upper bound. Each hard clash says which one it got
+# in its own `depth_semantics`.
+DEPTH_SEMANTICS = 'vertex_penetration_estimate'
+DEPTH_SEMANTICS_FALLBACK = 'aabb_overlap_estimate'
 
 
 def _parse_elements(payload):
@@ -223,6 +229,11 @@ def _check_pair(pair):
         result = meshes_intersect_prepared(_get_bvh(ia), _get_bvh(ib))
         if result is not None:
             centroid, depth = result
+            semantics = DEPTH_SEMANTICS_FALLBACK
+            pen = estimate_penetration_depth(
+                elem_a['vertices'], _get_bvh(ia), elem_b['vertices'], _get_bvh(ib))
+            if pen is not None:
+                depth, semantics = pen, DEPTH_SEMANTICS
             return {
                 'elementA': elem_a['id'],
                 'elementB': elem_b['id'],
@@ -234,15 +245,21 @@ def _check_pair(pair):
                 # depth * 0.001 — not a volume at all). Kept as null for
                 # API-shape compatibility with older consumers.
                 'volume': None,
-                'depth_semantics': DEPTH_SEMANTICS,
+                'depth_semantics': semantics,
                 'type': 'hard',
             }
 
     # Soft clash: clearance distance check
     max_gap_m = _WORKER['max_gap_m']
     if max_gap_m > 0:
-        result = mesh_min_distance_prepared(
-            _get_dist_prep(ia), _get_dist_prep(ib), max_gap_m)
+        # True mesh distance (browser _meshMinDist semantics): 0 for
+        # intersecting or fully-contained pairs, point-to-triangle both ways
+        # + edge-edge otherwise. When the hard check already ran and missed,
+        # the pair is known not to intersect — skip re-testing it.
+        result = mesh_min_distance_exact(
+            _get_bvh(ia), _get_bvh(ib),
+            _get_dist_prep(ia), _get_dist_prep(ib), max_gap_m,
+            known_disjoint=_WORKER['check_hard'])
         if result is not None:
             dist_m, midpoint = result
             return {

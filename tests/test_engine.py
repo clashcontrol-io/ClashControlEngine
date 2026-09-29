@@ -7,6 +7,11 @@ from clashcontrol_engine.intersection import (
     build_bvh,
     meshes_intersect,
     mesh_min_distance,
+    mesh_min_distance_exact,
+    estimate_penetration_depth,
+    point_in_mesh,
+    prepare_mesh,
+    prepare_distance,
 )
 from clashcontrol_engine.sweep import sweep_and_prune
 from clashcontrol_engine.engine import detect_clashes
@@ -548,3 +553,122 @@ def test_detect_clashes_partial_failure_is_still_incomplete(monkeypatch):
     assert stats['completed'] == 14
     assert stats['incomplete'] is True
     assert 'synthetic single-pair failure' in stats['sampleError']
+
+
+# ── Browser-engine parity: edge-edge, intersection/containment, depth ──
+
+def _make_cuboid(lo, hi):
+    """Axis-aligned cuboid mesh from min/max corners (12 triangles)."""
+    (x0, y0, z0), (x1, y1, z1) = lo, hi
+    verts = np.array([
+        [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+        [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+    ], dtype=np.float32)
+    _, faces = _make_box([0, 0, 0], 1.0)
+    return verts, faces
+
+
+def _exact(va, fa, vb, fb, threshold, known_disjoint=False):
+    return mesh_min_distance_exact(
+        prepare_mesh(va, fa), prepare_mesh(vb, fb),
+        prepare_distance(va, fa), prepare_distance(vb, fb),
+        threshold, known_disjoint=known_disjoint)
+
+
+def test_min_distance_crossing_bars_uses_edge_edge():
+    """Two long bars crossing at right angles with a 100 mm vertical gap:
+    no vertex is near the other bar's faces (point-to-triangle alone says
+    ~0.95 m), only the edge-edge term finds the true 0.1 m."""
+    va, fa = _make_cuboid([-1, -0.05, -0.05], [1, 0.05, 0.05])   # along x
+    vb, fb = _make_cuboid([-0.05, -1, 0.15], [0.05, 1, 0.25])    # along y, above
+    old = mesh_min_distance(va, vb, 2.0, fa, fb)
+    assert old is not None and old[0] > 0.5, old  # the gap the old path reported
+    dist, mid = _exact(va, fa, vb, fb, 2.0)
+    assert dist == pytest.approx(0.1, abs=1e-6)
+    assert mid[2] == pytest.approx(0.1, abs=1e-6)
+
+
+def test_min_distance_is_zero_for_intersecting_meshes():
+    """A duct crossing a column: distance 0, not a spurious positive gap."""
+    va, fa = _make_cuboid([-0.2, -0.2, 0], [0.2, 0.2, 3])      # column
+    vb, fb = _make_cuboid([-2, -0.1, 1], [2, 0.1, 1.2])        # duct through it
+    dist, _ = _exact(va, fa, vb, fb, 0.05)
+    assert dist == 0.0
+
+
+def test_min_distance_is_zero_for_contained_mesh():
+    """A pipe segment fully inside a column (no surface crossing): 0."""
+    va, fa = _make_cuboid([-0.5, -0.5, 0], [0.5, 0.5, 3])
+    vb, fb = _make_cuboid([-0.05, -0.05, 1], [0.05, 0.05, 2])
+    dist, _ = _exact(va, fa, vb, fb, 0.05, known_disjoint=True)
+    assert dist == 0.0
+    dist, _ = _exact(vb, fb, va, fa, 0.05, known_disjoint=True)
+    assert dist == 0.0
+
+
+def test_min_distance_separated_beyond_threshold_is_none():
+    va, fa = _make_cuboid([0, 0, 0], [1, 1, 1])
+    vb, fb = _make_cuboid([2, 0, 0], [3, 1, 1])
+    assert _exact(va, fa, vb, fb, 0.5) is None
+    dist, _ = _exact(va, fa, vb, fb, 1.5)
+    assert dist == pytest.approx(1.0, abs=1e-6)
+
+
+def test_point_in_mesh_closed_box():
+    v, f = _make_cuboid([0, 0, 0], [1, 1, 1])
+    tris = v[f]
+    assert point_in_mesh([0.5, 0.5, 0.5], tris)
+    assert not point_in_mesh([1.5, 0.5, 0.5], tris)
+
+
+def test_penetration_depth_vertex_estimate():
+    """Small box poking 0.35 m into a big box's +x face."""
+    va, fa = _make_box([0, 0, 0], 1.0)
+    vb, fb = _make_box([0.9, 0, 0], 0.25)   # x in [0.65, 1.15]
+    d = estimate_penetration_depth(va, prepare_mesh(va, fa), vb, prepare_mesh(vb, fb))
+    assert d == pytest.approx(0.35, abs=1e-6)
+
+
+def test_penetration_depth_none_without_inside_vertex():
+    """Crossing bars: no vertex of either inside the other -> None
+    (caller falls back to the AABB estimate)."""
+    va, fa = _make_cuboid([-1, -0.05, -0.05], [1, 0.05, 0.05])
+    vb, fb = _make_cuboid([-0.05, -1, -0.02], [0.05, 1, 0.02])
+    assert estimate_penetration_depth(va, prepare_mesh(va, fa), vb, prepare_mesh(vb, fb)) is None
+
+
+def _pair_payload(va, fa, vb, fb, rules):
+    return {
+        'elements': [
+            {'id': 1, 'modelId': 'm1', 'ifcType': 'IfcColumn', 'name': 'A',
+             'storey': 'L1', 'discipline': 'structural',
+             'vertices': va.flatten().tolist(), 'indices': fa.flatten().tolist()},
+            {'id': 2, 'modelId': 'm2', 'ifcType': 'IfcDuctSegment', 'name': 'B',
+             'storey': 'L1', 'discipline': 'mep',
+             'vertices': vb.flatten().tolist(), 'indices': fb.flatten().tolist()},
+        ],
+        'rules': rules,
+    }
+
+
+def test_detect_hard_clash_reports_vertex_penetration_depth():
+    va, fa = _make_box([0, 0, 0], 1.0)
+    vb, fb = _make_box([0.9, 0, 0], 0.25)
+    result = detect_clashes(_pair_payload(va, fa, vb, fb,
+        {'modelA': 'all', 'modelB': 'all', 'maxGap': 0, 'mode': 'hard'}))
+    assert len(result['clashes']) == 1
+    clash = result['clashes'][0]
+    assert clash['type'] == 'hard'
+    assert clash['depth_semantics'] == 'vertex_penetration_estimate'
+    assert clash['distance'] == -350
+
+
+def test_detect_clearance_edge_edge_gap():
+    """Soft run on crossing bars 100 mm apart reports 100 mm, not ~950."""
+    va, fa = _make_cuboid([-1, -0.05, -0.05], [1, 0.05, 0.05])
+    vb, fb = _make_cuboid([-0.05, -1, 0.15], [0.05, 1, 0.25])
+    result = detect_clashes(_pair_payload(va, fa, vb, fb,
+        {'modelA': 'all', 'modelB': 'all', 'maxGap': 200, 'mode': 'soft'}))
+    assert len(result['clashes']) == 1
+    assert result['clashes'][0]['type'] == 'clearance'
+    assert result['clashes'][0]['distance'] == 100
