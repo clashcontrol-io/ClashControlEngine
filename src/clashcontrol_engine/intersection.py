@@ -679,3 +679,282 @@ def _spatial_hash_min_dist(verts_a, verts_b, threshold_m):
         return None
     midpoint = (best_q + best_g) / 2.0
     return float(min_dist), midpoint
+
+
+# ── Parity with the browser engine: containment, edge-edge, depth ──
+#
+# Ports of ClashControl's browser engine (index.html _pointInMeshBVH,
+# _segSegDistSq/_triTriDistSq edge-edge terms, _meshMinDistContainmentFix,
+# _estimatePenetrationDepthM) — same constants, same decisions, so a pair
+# measures the same on both backends. Not bit-identical (the browser runs
+# f64 over f32 world coordinates via its own BVH; this is vectorized numpy),
+# but the same algorithm: e.g. a duct crossing a column is 0 mm clearance on
+# both, not a spurious positive gap.
+
+# Near-axis but deliberately NOT exactly axis-aligned ray directions for the
+# inside/outside parity test — an exactly axis-aligned ray lands on shared
+# triangle edges of axis-aligned IFC geometry, double-counting one crossing
+# and flipping parity (see the browser's _PEN_RAY_DIRS comment).
+_PEN_RAY_DIRS = np.array([
+    [1.0, 0.0131, 0.0177],
+    [0.0149, 1.0, 0.0163],
+    [0.0121, 0.0139, 1.0],
+])
+_PEN_RAY_DIRS = _PEN_RAY_DIRS / np.linalg.norm(_PEN_RAY_DIRS, axis=1)[:, None]
+
+
+def _ray_hit_count(origin, direction, tris):
+    """
+    Number of triangles in *tris* (N,3,3) the ray origin + t*direction hits
+    with t > 1e-7 (Möller–Trumbore, same tolerances as the browser's
+    _rayTriHit: |det| < 1e-12 is parallel, barycentric edges inclusive
+    by 1e-9).
+    """
+    v0 = tris[:, 0]
+    e1 = tris[:, 1] - v0
+    e2 = tris[:, 2] - v0
+    p = np.cross(direction, e2)
+    det = np.einsum('ij,ij->i', e1, p)
+    ok = ~((det > -1e-12) & (det < 1e-12))
+    if not ok.any():
+        return 0
+    v0, e1, e2, p, det = v0[ok], e1[ok], e2[ok], p[ok], det[ok]
+    inv = 1.0 / det
+    t_vec = origin - v0
+    u = np.einsum('ij,ij->i', t_vec, p) * inv
+    q = np.cross(t_vec, e1)
+    v = (q @ direction) * inv
+    t = np.einsum('ij,ij->i', e2, q) * inv
+    hit = (u >= -1e-9) & (u <= 1 + 1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (t > 1e-7)
+    return int(hit.sum())
+
+
+def point_in_mesh(point, tris):
+    """
+    Ray-parity inside test with a 3-ray majority vote (browser:
+    _pointInMeshBVH). Only meaningful for closed (manifold) meshes; an open
+    mesh can report either answer, which is why callers only use it to
+    *tighten* a result (0 clearance / a depth estimate), never to create a
+    hard clash on its own.
+    """
+    if tris is None or len(tris) == 0:
+        return False
+    tris = np.asarray(tris, dtype=np.float64)
+    point = np.asarray(point, dtype=np.float64)
+    votes = 0
+    for d in _PEN_RAY_DIRS:
+        if _ray_hit_count(point, d, tris) & 1:
+            votes += 1
+    return votes >= 2
+
+
+def _seg_seg_dist(p1, q1, p2, q2):
+    """
+    Vectorized closest points between segment arrays p1q1 and p2q2
+    (Ericson RTCD 5.1.9, same branch structure and EPS as the browser's
+    _segSegDistSq). Returns (dist, c1, c2).
+    """
+    d1 = q1 - p1
+    d2 = q2 - p2
+    r = p1 - p2
+    a = np.einsum('ij,ij->i', d1, d1)
+    e = np.einsum('ij,ij->i', d2, d2)
+    f = np.einsum('ij,ij->i', d2, r)
+    c = np.einsum('ij,ij->i', d1, r)
+    b = np.einsum('ij,ij->i', d1, d2)
+    eps = 1e-15
+    n = len(a)
+    s = np.zeros(n)
+    t = np.zeros(n)
+    a_deg = a <= eps
+    e_deg = e <= eps
+    both = a_deg & e_deg
+    only_a = a_deg & ~e_deg
+    only_e = ~a_deg & e_deg
+    gen = ~a_deg & ~e_deg
+    with np.errstate(divide='ignore', invalid='ignore'):
+        # a degenerate (point) vs segment
+        t = np.where(only_a, np.clip(f / np.where(only_a, e, 1.0), 0.0, 1.0), t)
+        # segment vs e degenerate (point)
+        s = np.where(only_e, np.clip(-c / np.where(only_e, a, 1.0), 0.0, 1.0), s)
+        # general case
+        denom = a * e - b * b
+        s_gen = np.where(denom != 0, np.clip((b * f - c * e) / np.where(denom != 0, denom, 1.0), 0.0, 1.0), 0.0)
+        t_gen = (b * s_gen + f) / np.where(gen, e, 1.0)
+        a_safe = np.where(gen, a, 1.0)
+        lo = t_gen < 0
+        hi = t_gen > 1
+        s_gen = np.where(lo, np.clip(-c / a_safe, 0.0, 1.0), s_gen)
+        s_gen = np.where(hi, np.clip((b - c) / a_safe, 0.0, 1.0), s_gen)
+        t_gen = np.where(lo, 0.0, np.where(hi, 1.0, t_gen))
+    s = np.where(gen, s_gen, s)
+    t = np.where(gen, t_gen, t)
+    s = np.where(both, 0.0, s)
+    t = np.where(both, 0.0, t)
+    c1 = p1 + d1 * s[:, None]
+    c2 = p2 + d2 * t[:, None]
+    return np.linalg.norm(c1 - c2, axis=1), c1, c2
+
+
+_EDGES = ((0, 1), (1, 2), (2, 0))
+
+
+def _refine_edge_edge(prep_a, prep_b, bound_m, best, chunk=256):
+    """
+    Improve *best* with the 9 edge-edge distances of every triangle pair
+    whose centroids are within bound + both pads — the term point-to-
+    triangle misses for two skew edges whose closest points are both
+    interior to the edges (e.g. two crossing bars).
+
+    Processed in chunks of A's triangles, with the search radius shrinking
+    as the best distance improves, so meshes with a few huge triangles
+    (big pads) never materialise an all-pairs list at once.
+    """
+    ta, tb = prep_a.get('tri_tree'), prep_b.get('tri_tree')
+    if ta is None or tb is None:
+        return best
+    tris_a_all = np.asarray(prep_a['tris'], dtype=np.float64)
+    tris_b_all = np.asarray(prep_b['tris'], dtype=np.float64)
+    cent_a = tris_a_all.mean(axis=1)
+    pad = prep_a['tri_pad'] + prep_b['tri_pad']
+    best_dist, best_p, best_q = best
+    for lo in range(0, len(cent_a), chunk):
+        radius = min(best_dist, bound_m) + pad
+        lists = tb.query_ball_point(cent_a[lo:lo + chunk], r=radius)
+        ia, ib = [], []
+        for k, js in enumerate(lists):
+            if js:
+                ia.extend([lo + k] * len(js))
+                ib.extend(js)
+        if not ia:
+            continue
+        tris_a = tris_a_all[np.asarray(ia)]
+        tris_b = tris_b_all[np.asarray(ib)]
+        for (a0, a1) in _EDGES:
+            for (b0, b1) in _EDGES:
+                d, c1, c2 = _seg_seg_dist(tris_a[:, a0], tris_a[:, a1], tris_b[:, b0], tris_b[:, b1])
+                k = int(np.argmin(d))
+                if d[k] < best_dist:
+                    best_dist = float(d[k])
+                    best_p = c1[k]
+                    best_q = c2[k]
+    return best_dist, best_p, best_q
+
+
+def _mesh_tris(prep_bvh):
+    """Triangle array (N,3,3) from a prepare_mesh result, or None."""
+    if prep_bvh is None:
+        return None
+    node, tris = prep_bvh
+    if node is None or tris is None or len(tris) == 0:
+        return None
+    return tris
+
+
+def mesh_min_distance_exact(bvh_a, bvh_b, dist_a, dist_b, threshold_m,
+                            known_disjoint=False):
+    """
+    True mesh-to-mesh minimum distance, matching the browser engine's
+    _meshMinDist semantics:
+
+    - 0 when the meshes intersect (same Möller tri-tri test the hard-clash
+      path uses — skipped when *known_disjoint*, i.e. the caller just ran
+      meshes_intersect_prepared on this pair and it returned None);
+    - point-to-triangle in both directions + edge-edge otherwise;
+    - 0 when one closed mesh is fully inside the other with no surface
+      crossing (a pipe segment wholly inside a column) — tested with the
+      first vertex of each mesh, like _meshMinDistContainmentFix.
+
+    bvh_*: prepare_mesh results. dist_*: prepare_distance results.
+    Returns (distance_m, midpoint) or None if distance > threshold_m.
+    """
+    if not known_disjoint and bvh_a is not None and bvh_b is not None:
+        hit = meshes_intersect_prepared(bvh_a, bvh_b)
+        if hit is not None:
+            return 0.0, np.asarray(hit[0], dtype=np.float64)
+
+    if dist_a.get('tri_tree') is not None and dist_b.get('tri_tree') is not None:
+        best = _best_point_pair(dist_a, dist_b, threshold_m)
+        best = _refine_edge_edge(dist_a, dist_b, min(best[0], threshold_m), best)
+        dist_m = best[0]
+        midpoint = (np.asarray(best[1], dtype=np.float64) + np.asarray(best[2], dtype=np.float64)) / 2.0
+    else:
+        # No scipy / no faces: vertex-only fallback; containment still applies.
+        base = mesh_min_distance_prepared(dist_a, dist_b, float('inf'))
+        if base is None:
+            return None
+        dist_m, midpoint = base
+
+    if dist_m > 0:
+        tris_a, tris_b = _mesh_tris(bvh_a), _mesh_tris(bvh_b)
+        if tris_a is not None and tris_b is not None:
+            pa = np.asarray(tris_a[0][0], dtype=np.float64)
+            if point_in_mesh(pa, tris_b):
+                return 0.0, pa
+            pb = np.asarray(tris_b[0][0], dtype=np.float64)
+            if point_in_mesh(pb, tris_a):
+                return 0.0, pb
+
+    if dist_m > threshold_m:
+        return None
+    return float(dist_m), midpoint
+
+
+def _best_point_pair(prep_a, prep_b, threshold_m):
+    """
+    (dist, pA, pB): vertex-vertex KD-tree seed refined with point-to-
+    triangle in both directions — the same steps as
+    mesh_min_distance_prepared, but keeping both closest points so the
+    edge-edge pass can improve on them.
+    """
+    verts_a, verts_b = prep_a['verts'], prep_b['verts']
+    dists, idxs = prep_b['tree'].query(verts_a, k=1)
+    k = int(np.argmin(dists))
+    best = (float(dists[k]),
+            np.asarray(verts_a[k], dtype=np.float64),
+            np.asarray(verts_b[idxs[k]], dtype=np.float64))
+    bound = min(best[0], threshold_m)
+    best = _refine_point_to_tris(verts_a, prep_b, bound, best)
+    best = _refine_point_to_tris(verts_b, prep_a, min(best[0], bound), best)
+    return best
+
+
+def estimate_penetration_depth(verts_a, bvh_a, verts_b, bvh_b):
+    """
+    MTD-style penetration estimate for a CONFIRMED hard clash (browser:
+    _estimatePenetrationDepthM): for each mesh's vertices that lie inside
+    the other mesh, the vertex's true distance to the other surface; the
+    max over both sides approximates how far the solids interpenetrate.
+    Sampling cap mirrors the browser (every ceil(3n/1000)-th vertex once a
+    mesh has more than 1000 vertices).
+
+    Returns metres, or None when no sampled vertex is inside (a graze, or an
+    open/non-manifold mesh) — callers fall back to the AABB estimate.
+    """
+    tris_a, tris_b = _mesh_tris(bvh_a), _mesh_tris(bvh_b)
+    if tris_a is None or tris_b is None:
+        return None
+    tris_a = np.asarray(tris_a, dtype=np.float64)
+    tris_b = np.asarray(tris_b, dtype=np.float64)
+    best, found = 0.0, False
+    for verts, other in ((verts_a, tris_b), (verts_b, tris_a)):
+        verts = np.asarray(verts, dtype=np.float64)
+        n = len(verts)
+        if n == 0:
+            continue
+        step = int(np.ceil(3 * n / 1000.0)) if 3 * n > 3000 else 1
+        lo_b = other.reshape(-1, 3).min(axis=0)
+        hi_b = other.reshape(-1, 3).max(axis=0)
+        for v in verts[::step]:
+            # A vertex outside the other mesh's AABB cannot be inside a
+            # closed mesh — skip the ray casts. Identical result to the
+            # browser for closed meshes; for open meshes (where parity is
+            # meaningless anyway) this can only drop a spurious "inside".
+            if (v < lo_b).any() or (v > hi_b).any():
+                continue
+            if point_in_mesh(v, other):
+                closest = _closest_points_on_tris(v, other)
+                d = float(np.sqrt(np.min(np.einsum('ij,ij->i', closest - v, closest - v))))
+                if np.isfinite(d) and d > best:
+                    best, found = d, True
+    return best if found else None
