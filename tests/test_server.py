@@ -2,6 +2,7 @@
 import json
 import socket
 import threading
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
@@ -25,22 +26,45 @@ def server_port():
     httpd.server_close()
 
 
-def _get(port, path, origin=None):
+def _get(port, path, origin=None, token=None):
     headers = {'Origin': origin} if origin else {}
+    if token:
+        headers['X-CC-Pairing-Token'] = token
     req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', headers=headers)
     with urllib.request.urlopen(req, timeout=10) as resp:
         return resp.status, dict(resp.headers), json.loads(resp.read())
 
 
-def _post_json(port, path, payload, origin=None):
+def _post_json(port, path, payload, origin=None, token=None):
     body = json.dumps(payload).encode()
     headers = {'Content-Type': 'application/json'}
     if origin:
         headers['Origin'] = origin
+    if token:
+        headers['X-CC-Pairing-Token'] = token
     req = urllib.request.Request(
         f'http://127.0.0.1:{port}{path}', data=body, headers=headers)
     with urllib.request.urlopen(req, timeout=60) as resp:
         return resp.status, dict(resp.headers), json.loads(resp.read())
+
+
+def _pair(port, origin=APP_ORIGIN):
+    req = urllib.request.Request(
+        f'http://127.0.0.1:{port}/pair', data=b'', method='POST',
+        headers={'Origin': origin})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())['token']
+
+
+def _status_of(port, method, path, headers=None, data=None):
+    """Return (status, headers, body) without raising on HTTP errors."""
+    req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', data=data,
+                                 method=method, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, dict(resp.headers), resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
 
 
 def _raw_request(port, data: bytes) -> bytes:
@@ -194,8 +218,9 @@ def test_detect_happy_path(server_port):
         ],
         'rules': {'mode': 'hard'},
     }
+    token = _pair(server_port)
     status, headers, data = _post_json(server_port, '/detect', payload,
-                                       origin=APP_ORIGIN)
+                                       origin=APP_ORIGIN, token=token)
     assert status == 200
     assert len(data['clashes']) == 1
     assert data['stats']['candidatePairs'] == 1
@@ -252,38 +277,185 @@ def test_options_preflight_allowed_origin(server_port):
     assert 'Content-Type' in headers.get('Access-Control-Allow-Headers', '')
 
 
-def test_options_preflight_denied_origin(server_port):
-    req = urllib.request.Request(
-        f'http://127.0.0.1:{server_port}/detect',
-        method='OPTIONS',
-        headers={'Origin': 'https://evil.example.com'})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        headers = dict(resp.headers)
+def test_options_preflight_denied_origin_is_403(server_port):
+    status, headers, _ = _status_of(
+        server_port, 'OPTIONS', '/detect', {'Origin': 'https://evil.example.com'})
+    assert status == 403
     assert 'Access-Control-Allow-Origin' not in headers
     assert 'Access-Control-Allow-Private-Network' not in headers
 
 
-def test_cors_reflection_denied_on_get(server_port):
-    status, headers, _ = _get(server_port, '/status',
-                              origin='https://evil.example.com')
-    assert status == 200  # still served — just no CORS grant
-    assert 'Access-Control-Allow-Origin' not in headers
+def test_preflight_allows_pairing_header(server_port):
+    status, headers, _ = _status_of(
+        server_port, 'OPTIONS', '/detect',
+        {'Origin': APP_ORIGIN, 'Access-Control-Request-Private-Network': 'true'})
+    assert status == 200
+    assert 'X-CC-Pairing-Token' in headers.get('Access-Control-Allow-Headers', '')
 
 
 @pytest.mark.parametrize('origin,allowed', [
     ('https://clashcontrol.io', True),
     ('https://www.clashcontrol.io', True),
-    ('http://localhost:8000', True),
-    ('http://localhost', True),
-    ('https://localhost:8443', True),
-    ('http://127.0.0.1:5500', True),
-    ('http://[::1]:8000', True),
+    # Dev origins are opt-in via CC_ENGINE_ALLOWED_ORIGINS, not default.
+    ('http://localhost:8000', False),
+    ('http://localhost', False),
+    ('http://127.0.0.1:5500', False),
+    ('http://[::1]:8000', False),
     ('https://evil.example.com', False),
     ('https://clashcontrol.io.evil.com', False),
     ('https://xclashcontrol.io', False),
+    ('http://www.clashcontrol.io', False),
     ('http://192.168.1.10:8000', False),
     ('null', False),
     ('', False),
 ])
 def test_origin_allowlist(origin, allowed):
     assert _origin_allowed(origin) is allowed
+
+
+def test_extra_origins_from_env(monkeypatch):
+    monkeypatch.setenv('CC_ENGINE_ALLOWED_ORIGINS',
+                       'http://localhost:8000, https://self.example/ ,*')
+    assert _origin_allowed('http://localhost:8000')
+    assert _origin_allowed('https://self.example')
+    assert not _origin_allowed('*')
+    assert not _origin_allowed('http://localhost:9999')
+
+
+# ── Hostile-origin enforcement (executed server-side, not just CORS) ──
+
+EVIL = 'https://evil.example.com'
+
+
+@pytest.mark.parametrize('method,path', [
+    ('GET', '/status'), ('GET', '/update'), ('POST', '/update'),
+    ('POST', '/detect'), ('POST', '/pair'),
+])
+def test_hostile_origin_rejected_everywhere(server_port, method, path):
+    data = b'' if method == 'POST' else None
+    status, headers, body = _status_of(
+        server_port, method, path, {'Origin': EVIL}, data)
+    assert status == 403
+    assert json.loads(body)['code'] == 'origin_not_allowed'
+    assert 'Access-Control-Allow-Origin' not in headers
+
+
+def test_null_origin_rejected(server_port):
+    status, _, _ = _status_of(server_port, 'GET', '/status', {'Origin': 'null'})
+    assert status == 403
+
+
+def test_simple_cross_site_post_does_not_run_a_job(server_port):
+    """A text/plain POST needs no CORS preflight, so the browser sends it
+    straight away. It must be refused before the body is even parsed."""
+    payload = json.dumps({'elements': [], 'rules': {}}).encode()
+    status, _, body = _status_of(
+        server_port, 'POST', '/detect',
+        {'Origin': EVIL, 'Content-Type': 'text/plain'}, payload)
+    assert status == 403
+    assert b'clashes' not in body
+
+
+def test_dns_rebinding_host_rejected(server_port):
+    raw = _raw_request(
+        server_port,
+        b'GET /status HTTP/1.1\r\nHost: attacker.example:19800\r\n\r\n')
+    assert b' 421 ' in raw.split(b'\r\n')[0]
+
+
+@pytest.mark.parametrize('host', [b'127.0.0.1:19800', b'localhost:19800',
+                                  b'[::1]:19800', b'localhost'])
+def test_loopback_hosts_accepted(server_port, host):
+    raw = _raw_request(server_port, b'GET /status HTTP/1.1\r\nHost: ' + host + b'\r\n\r\n')
+    assert b' 200 ' in raw.split(b'\r\n')[0]
+
+
+# ── Pairing ───────────────────────────────────────────────────────
+
+def test_status_readable_by_app_without_token(server_port):
+    status, headers, data = _get(server_port, '/status', origin=APP_ORIGIN)
+    assert status == 200
+    assert headers.get('Access-Control-Allow-Origin') == APP_ORIGIN
+
+
+@pytest.mark.parametrize('method,path', [
+    ('GET', '/update'), ('POST', '/update'), ('POST', '/detect')])
+def test_browser_request_without_token_is_401(server_port, method, path):
+    data = b'{}' if method == 'POST' else None
+    status, headers, body = _status_of(
+        server_port, method, path, {'Origin': APP_ORIGIN}, data)
+    assert status == 401
+    assert json.loads(body)['code'] == 'pairing_required'
+    # 401 must be CORS-readable so the app can tell it to re-pair.
+    assert headers.get('Access-Control-Allow-Origin') == APP_ORIGIN
+
+
+def test_wrong_token_is_401(server_port):
+    status, _, _ = _status_of(
+        server_port, 'POST', '/detect',
+        {'Origin': APP_ORIGIN, 'X-CC-Pairing-Token': 'not-a-real-token'}, b'{}')
+    assert status == 401
+
+
+def test_pair_issues_working_token(server_port):
+    token = _pair(server_port)
+    assert len(token) >= 32
+    status, _, _ = _status_of(
+        server_port, 'GET', '/update',
+        {'Origin': APP_ORIGIN, 'X-CC-Pairing-Token': token})
+    assert status == 200
+
+
+def test_pair_tokens_are_unique(server_port):
+    assert _pair(server_port) != _pair(server_port)
+
+
+def test_pair_requires_origin(server_port):
+    status, _, body = _status_of(server_port, 'POST', '/pair', data=b'')
+    assert status == 400
+    assert json.loads(body)['code'] == 'origin_required'
+
+
+def test_originless_local_tooling_needs_no_token(server_port):
+    """CLI / curl / daemon probes carry no Origin and are not browser traffic."""
+    status, _, _ = _status_of(server_port, 'GET', '/update')
+    assert status == 200
+
+
+# ── Token store ───────────────────────────────────────────────────
+
+def test_token_expires():
+    from clashcontrol_engine.pairing import PairingStore
+    now = [1000.0]
+    st = PairingStore(ttl=60, clock=lambda: now[0])
+    token, ttl = st.issue()
+    assert ttl == 60 and st.valid(token)
+    now[0] += 59
+    assert st.valid(token)
+    now[0] += 2
+    assert not st.valid(token)
+
+
+def test_token_store_is_capped():
+    from clashcontrol_engine.pairing import PairingStore
+    st = PairingStore(max_tokens=3)
+    tokens = [st.issue()[0] for _ in range(5)]
+    assert not st.valid(tokens[0])      # oldest evicted
+    assert st.valid(tokens[-1])
+
+
+@pytest.mark.parametrize('bad', [None, '', 123, b'x'])
+def test_token_store_rejects_junk(bad):
+    from clashcontrol_engine.pairing import PairingStore
+    assert not PairingStore().valid(bad)
+
+
+@pytest.mark.parametrize('host,ok', [
+    ('127.0.0.1', True), ('127.0.0.1:19800', True), ('localhost:1', True),
+    ('LOCALHOST', True), ('[::1]:19800', True), ('[::1]', True),
+    ('attacker.example', False), ('attacker.example:19800', False),
+    ('127.0.0.1.evil.com', False), ('', False), (None, False),
+])
+def test_host_allowed(host, ok):
+    from clashcontrol_engine.pairing import host_allowed
+    assert host_allowed(host) is ok

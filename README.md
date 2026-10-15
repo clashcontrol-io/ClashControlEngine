@@ -54,6 +54,17 @@ clashcontrol-engine --uninstall    # remove URL handler + stop engine
 - `CC_ENGINE_PORT` — same as `--port`
 - `CC_ENGINE_HOST` — same as `--host`
 - `CC_ENGINE_STATE_DIR` — where the PID and log files live (default `~/.clashcontrol`)
+- `CC_ENGINE_ALLOWED_ORIGINS` — comma-separated **exact** extra origins allowed to use the engine, for self-hosting or developing the web app (e.g. `http://localhost:8000`). No wildcards.
+
+## Security
+
+The engine only listens on loopback, but any page open in your browser can reach `127.0.0.1`, so it does not trust the network path alone:
+
+- **Origin allow-list, enforced server-side.** A request carrying an `Origin` header must come from `https://www.clashcontrol.io` / `https://clashcontrol.io` (or an origin you listed in `CC_ENGINE_ALLOWED_ORIGINS`); anything else, including `null`, gets `403` before any work runs. This covers WebSocket handshakes too.
+- **Host check.** Requests whose `Host` is not a loopback name get `421` (DNS-rebinding guard).
+- **Pairing token.** The web app calls `POST /pair` and receives a random token valid for 1 hour (held in memory only). Browser requests must send it as `X-CC-Pairing-Token` (or `?cc_token=` on the WebSocket) for everything except `GET /status`. Only an allow-listed origin can read the token.
+- **Private Network Access.** Preflights from the allowed origin are answered with `Access-Control-Allow-Private-Network: true`, as Chromium requires for public sites talking to localhost.
+- Requests with no `Origin` (the CLI, `curl`, local tooling) are not browser cross-origin traffic and stay governed by the loopback bind and the Host check.
 
 ## What it does
 
