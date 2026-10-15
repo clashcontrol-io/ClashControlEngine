@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Security
+- **Browser-origin enforcement is now server-side.** Previously a disallowed
+  `Origin` only lost its CORS headers; the request still *ran*, so any website
+  could start `/detect` jobs or trigger `POST /update` through a visitor's
+  browser with a "simple" cross-site request. Disallowed origins now get `403`
+  before any work (HTTP and WebSocket), and only `clashcontrol.io` /
+  `www.clashcontrol.io` are allowed by default. `localhost:*` is no longer
+  implicitly trusted; opt in with `CC_ENGINE_ALLOWED_ORIGINS`.
+- Short-lived pairing token (`POST /pair`, `X-CC-Pairing-Token`, `?cc_token=`
+  on the WebSocket) required for browser requests other than `GET /status`.
+- Loopback-only `Host` check (DNS rebinding); `Access-Control-Allow-Private-Network`
+  on preflights; preflight now allows the pairing header.
+
 Parity with the browser engine's distance and depth measurement (same
 algorithm as ClashControl's `_meshMinDist` / `_estimatePenetrationDepthM`).
 
